@@ -3,7 +3,7 @@
 Parent: [Chart the BLACKBOX Hackathon Project](../map.md)
 Type: grilling
 Status: open
-Blocked by: 01, 02
+Blocked by: 01, 02, 09
 
 ## Question
 
