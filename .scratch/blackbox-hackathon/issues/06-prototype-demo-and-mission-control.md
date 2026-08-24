@@ -2,7 +2,7 @@
 
 Parent: [Chart the BLACKBOX Hackathon Project](../map.md)
 Type: prototype
-Status: open
+Status: claimed
 Blocked by: 04, 05
 
 ## Question
