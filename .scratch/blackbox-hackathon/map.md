@@ -14,6 +14,7 @@ An approved BLACKBOX Spec v0.1 that is ready for implementation: the three-minut
 - BLACKBOX investigates, reproduces, and prepares a Remediation autonomously; applying the Remediation requires human approval, after which BLACKBOX replays the attack automatically.
 - The MVP must complete truthfully in about three minutes without deceptive cuts.
 - Preserve obvious seams for later extensions, but introduce no generic platform abstractions before the MVP Definition of Done is satisfied.
+- Build the authoritative Evidence Timeline from TrueForge events, transactional MCP audit records, and External Sink receipts. Langfuse is outside the MVP; retain only an optional one-way exporter seam after bundle finalization.
 - When GitHub work begins, use the developer's personal account and create the repository as private. Connect Qodo before the first implementation PR. The repository must transition to public and open source before the August 30, 2026 16:00 São Paulo submission deadline.
 
 ## Decisions so far
@@ -23,6 +24,7 @@ An approved BLACKBOX Spec v0.1 that is ready for implementation: the three-minut
 - [Verify the Current Hackathon Constraints](issues/01-verify-hackathon-constraints.md): TrueForge must visibly do real work, while the private repository must become public, reproducible, and submitted with the required demo artifacts by the deadline.
 - [Establish the TrueForge Capability Contract](issues/02-establish-trueforge-capability-contract.md): BLACKBOX can use remote MCP, Daytona Code Mode, model-directed subagents, turn-based approval resumption, durable sessions, and SDK events within documented boundaries.
 - [Define Incident Evidence and Attack Replay Semantics](issues/04-define-incident-evidence-and-replay.md): a correlated Evidence Bundle proves the canonical tool chain, gives every isolated run a strict verdict, and compares equivalent before/after executions with a six-run reliability gate.
+- [Assess the Agent Observability Tooling Boundary](issues/10-assess-observability-tooling.md): TrueForge plus BLACKBOX's evidence ledger covers the MVP, while Langfuse remains an optional redacted telemetry projection and never a verdict source.
 
 ## Not yet specified
 
