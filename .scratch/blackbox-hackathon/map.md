@@ -26,6 +26,7 @@ An approved BLACKBOX Spec v0.1 that is ready for implementation: the three-minut
 - [Define Incident Evidence and Attack Replay Semantics](issues/04-define-incident-evidence-and-replay.md): a correlated Evidence Bundle proves the canonical tool chain, gives every isolated run a strict verdict, and compares equivalent before/after executions with a six-run reliability gate.
 - [Define the Remediation and Safety Contract](issues/05-define-remediation-and-safety-contract.md): a monotonic Policy Patch is approval-gated, atomically applied, and verified only when readback, protected replay, legitimate control, and complete evidence all pass.
 - [Assess the Agent Observability Tooling Boundary](issues/10-assess-observability-tooling.md): TrueForge plus BLACKBOX's evidence ledger covers the MVP, while Langfuse remains an optional redacted telemetry projection and never a verdict source.
+- [Prototype the Three-Minute Demo and Mission Control](issues/06-prototype-demo-and-mission-control.md): one live guided Incident flow automates detection, investigation, and post-approval verification while progressively disclosing real TrueForge work and closing on evidence-backed before/after proof.
 
 ## Not yet specified
 
