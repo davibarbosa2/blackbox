@@ -75,3 +75,11 @@ _Avoid_: suspicious behavior, attempted exfiltration
 **Remediation**:
 A proposed change intended to prevent the Incident from succeeding again, applied only after human approval.
 _Avoid_: automatic fix, recommendation
+
+**Containment**:
+The security outcome in which untrusted content may still influence a Victim Agent, but policy prevents it from exposing protected information or completing an unsafe external action.
+_Avoid_: prompt-injection prevention, complete security
+
+**Policy Patch**:
+A versioned, evidence-backed change to the Victim Agent's capability policy that becomes effective only after explicit human approval.
+_Avoid_: prompt edit, arbitrary code change
