@@ -2,7 +2,7 @@
 
 Parent: [Chart the BLACKBOX Hackathon Project](../map.md)
 Type: grilling
-Status: open
+Status: claimed
 Blocked by: 02
 
 ## Question
