@@ -22,6 +22,7 @@ An approved BLACKBOX Spec v0.1 that is ready for implementation: the three-minut
 
 - [Verify the Current Hackathon Constraints](issues/01-verify-hackathon-constraints.md): TrueForge must visibly do real work, while the private repository must become public, reproducible, and submitted with the required demo artifacts by the deadline.
 - [Establish the TrueForge Capability Contract](issues/02-establish-trueforge-capability-contract.md): BLACKBOX can use remote MCP, Daytona Code Mode, model-directed subagents, turn-based approval resumption, durable sessions, and SDK events within documented boundaries.
+- [Define Incident Evidence and Attack Replay Semantics](issues/04-define-incident-evidence-and-replay.md): a correlated Evidence Bundle proves the canonical tool chain, gives every isolated run a strict verdict, and compares equivalent before/after executions with a six-run reliability gate.
 
 ## Not yet specified
 
