@@ -24,6 +24,7 @@ An approved BLACKBOX Spec v0.1 that is ready for implementation: the three-minut
 - [Verify the Current Hackathon Constraints](issues/01-verify-hackathon-constraints.md): TrueForge must visibly do real work, while the private repository must become public, reproducible, and submitted with the required demo artifacts by the deadline.
 - [Establish the TrueForge Capability Contract](issues/02-establish-trueforge-capability-contract.md): BLACKBOX can use remote MCP, Daytona Code Mode, model-directed subagents, turn-based approval resumption, durable sessions, and SDK events within documented boundaries.
 - [Define Incident Evidence and Attack Replay Semantics](issues/04-define-incident-evidence-and-replay.md): a correlated Evidence Bundle proves the canonical tool chain, gives every isolated run a strict verdict, and compares equivalent before/after executions with a six-run reliability gate.
+- [Define the Remediation and Safety Contract](issues/05-define-remediation-and-safety-contract.md): a monotonic Policy Patch is approval-gated, atomically applied, and verified only when readback, protected replay, legitimate control, and complete evidence all pass.
 - [Assess the Agent Observability Tooling Boundary](issues/10-assess-observability-tooling.md): TrueForge plus BLACKBOX's evidence ledger covers the MVP, while Langfuse remains an optional redacted telemetry projection and never a verdict source.
 
 ## Not yet specified
@@ -36,3 +37,4 @@ An approved BLACKBOX Spec v0.1 that is ready for implementation: the three-minut
 - A generic agent-security platform, universal scanner, complete OWASP coverage, enterprise RBAC, SIEM replacement, or support for multiple agent frameworks in the MVP.
 - Real customer data, production secrets, uncontrolled external targets, or offensive activity outside the synthetic demo environment.
 - Optimizing the developer's personal schedule or daily time allocation.
+- Automatic or user-facing rollback in the MVP; previous policy versions are preserved for audit, and any later rollback requires a separately approved workflow.

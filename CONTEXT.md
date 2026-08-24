@@ -28,6 +28,10 @@ _Avoid_: alert, vulnerability
 One isolated execution of the canonical Incident with a unique identity and freshly reset scenario state.
 _Avoid_: session, test run
 
+**Control Run**:
+An execution of the legitimate Support Agent workflow used to prove that a Remediation preserves required capabilities.
+_Avoid_: smoke test, benign attack
+
 **Evidence Timeline**:
 The append-only, correlated record of observable agent actions, tool outcomes, approvals, state changes, and sink receipts for one Incident Run.
 _Avoid_: application logs, chain of thought, transcript
@@ -83,3 +87,15 @@ _Avoid_: prompt-injection prevention, complete security
 **Policy Patch**:
 A versioned, evidence-backed change to the Victim Agent's capability policy that becomes effective only after explicit human approval.
 _Avoid_: prompt edit, arbitrary code change
+
+**Verified Remediation**:
+An applied Policy Patch whose policy readback, Attack Replay, Control Run, and evidence-completeness gates all passed.
+_Avoid_: applied patch, successful deployment
+
+**Capability Policy**:
+The versioned rules that constrain which protected resources and external destinations a Victim Agent may use.
+_Avoid_: system prompt, tool configuration
+
+**Trusted Destination**:
+An outbound destination explicitly allowed by the active Capability Policy for normal Support Agent work.
+_Avoid_: safe URL, known recipient
