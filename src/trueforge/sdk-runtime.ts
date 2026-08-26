@@ -1,0 +1,125 @@
+import { TrueForge } from "@truefoundry/trueforge-sdk";
+
+import type { RuntimeConfig } from "../config.js";
+import { runOpenRouterToolPreflight } from "../openrouter/preflight.js";
+import { configureTrueForge } from "./configure.js";
+import { executeTrueForgeSmoke } from "./execute-smoke.js";
+import {
+  RuntimeSmokeStageError,
+  type RuntimeSmokeEvidence,
+  type RuntimeSmokeFailureStage,
+  type TrueForgeRuntime,
+} from "./runtime.js";
+
+export function createSdkTrueForgeRuntime(
+  config: RuntimeConfig,
+  fetcher: typeof fetch = fetch,
+): TrueForgeRuntime {
+  const client = new TrueForge({
+    baseUrl: config.trueForge.baseUrl,
+    fetch: fetcher,
+    maxRetries: 0,
+    timeoutInSeconds: 60,
+  });
+  const secrets = [config.openRouter.apiKey, config.daytona.apiKey];
+
+  return {
+    async executeSmoke(options): Promise<RuntimeSmokeEvidence> {
+      const health = await atStage(
+        "health",
+        () => readHealth(config.trueForge.baseUrl, fetcher, options?.signal),
+        secrets,
+      );
+      const prepared = await atStage(
+        "configuration",
+        () => configureTrueForge(client, config, options?.signal),
+        secrets,
+      );
+      const preflight = await atStage(
+        "preflight",
+        () =>
+          runOpenRouterToolPreflight(
+            config.openRouter,
+            fetcher,
+            options?.signal,
+          ),
+        secrets,
+      );
+      const execution = await atStage(
+        "sandbox-smoke",
+        () =>
+          executeTrueForgeSmoke(
+            client,
+            prepared.agentName,
+            options?.signal,
+          ),
+        secrets,
+      );
+
+      return {
+        agent: {
+          id: prepared.agentId,
+          name: prepared.agentName,
+        },
+        health,
+        provider: {
+          modelAlias: config.openRouter.modelAlias,
+          name: "openrouter",
+          trueForgeModel: prepared.trueForgeModel,
+          upstreamModelId: config.openRouter.modelId,
+        },
+        preflight,
+        ...execution,
+        versions: {
+          node: process.version,
+          pnpm: "11.16.0",
+          trueForge: "0.1.4",
+          trueForgeSdk: "0.1.3",
+        },
+      };
+    },
+  };
+}
+
+async function atStage<T>(
+  stage: RuntimeSmokeFailureStage,
+  operation: () => Promise<T>,
+  secrets: readonly string[],
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Runtime smoke failed";
+    throw new RuntimeSmokeStageError(
+      stage,
+      new Error(redactSecrets(message, secrets)),
+    );
+  }
+}
+
+function redactSecrets(message: string, secrets: readonly string[]): string {
+  return [...secrets]
+    .sort((left, right) => right.length - left.length)
+    .reduce(
+      (redacted, secret) => redacted.replaceAll(secret, "[REDACTED]"),
+      message,
+    );
+}
+
+async function readHealth(
+  baseUrl: string,
+  fetcher: typeof fetch,
+  signal?: AbortSignal,
+): Promise<RuntimeSmokeEvidence["health"]> {
+  const response = await fetcher(`${baseUrl}/healthz`, {
+    ...(signal ? { signal } : {}),
+  });
+  const body = await response.text();
+  if (response.status !== 200 || body !== "OK!") {
+    throw new Error(
+      `TrueForge health check expected HTTP 200 and OK!, received ${response.status} and ${JSON.stringify(body)}`,
+    );
+  }
+  return { body: "OK!", status: 200 };
+}
