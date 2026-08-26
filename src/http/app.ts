@@ -12,6 +12,11 @@ interface BlackboxAppOptions {
   trueForgeRuntime: TrueForgeRuntime;
 }
 
+export interface BlackboxApplication {
+  app: Hono;
+  shutdown(): Promise<void>;
+}
+
 export function createBlackboxApp(options?: BlackboxAppOptions): Hono {
   const coordinator = options
     ? new RuntimeSmokeCoordinator(
@@ -22,10 +27,9 @@ export function createBlackboxApp(options?: BlackboxAppOptions): Hono {
   return buildApp(coordinator);
 }
 
-export function createBlackboxApplication(options: BlackboxAppOptions): {
-  app: Hono;
-  shutdown(): Promise<void>;
-} {
+export function createBlackboxApplication(
+  options: BlackboxAppOptions,
+): BlackboxApplication {
   const coordinator = new RuntimeSmokeCoordinator(
     options.trueForgeRuntime,
     new FileRuntimeSmokeStore(options.runtimeDirectory),

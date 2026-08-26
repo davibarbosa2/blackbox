@@ -112,9 +112,11 @@ async function readHealth(
   fetcher: typeof fetch,
   signal?: AbortSignal,
 ): Promise<RuntimeSmokeEvidence["health"]> {
-  const response = await fetcher(`${baseUrl}/healthz`, {
-    ...(signal ? { signal } : {}),
-  });
+  const request: RequestInit = {};
+  if (signal !== undefined) {
+    request.signal = signal;
+  }
+  const response = await fetcher(`${baseUrl}/healthz`, request);
   const body = await response.text();
   if (response.status !== 200 || body !== "OK!") {
     throw new Error(

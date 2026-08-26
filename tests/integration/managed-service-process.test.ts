@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ManagedServiceProcess } from "../../src/process/managed-service.js";
+import { findAvailablePort } from "../support/network.js";
 
 const HEALTH_SERVER_SOURCE = `
   const { createServer } = require("node:http");
@@ -117,8 +118,8 @@ describe("managed service process", () => {
     const outcome = await Promise.race([
       service.start().then(
         () => "started",
-        (error: unknown) =>
-          error instanceof Error ? error.message : String(error),
+        (cause: unknown) =>
+          cause instanceof Error ? cause.message : String(cause),
       ),
       delay(500).then(() => "timed-out"),
     ]);
@@ -126,24 +127,6 @@ describe("managed service process", () => {
     expect(outcome).toContain("missing-service failed to start");
   });
 });
-
-async function findAvailablePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (typeof address !== "object" || address === null) {
-        reject(new Error("Expected a TCP address"));
-        return;
-      }
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(address.port);
-      });
-    });
-  });
-}
 
 async function canListen(port: number): Promise<boolean> {
   return new Promise((resolve) => {

@@ -1,4 +1,4 @@
-import { createServer } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 
 export async function findAvailablePort(preferredPort = 0): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -6,13 +6,15 @@ export async function findAvailablePort(preferredPort = 0): Promise<number> {
     server.once("error", reject);
     server.listen(preferredPort, "127.0.0.1", () => {
       const address = server.address();
-      if (typeof address !== "object" || address === null) {
+      if (address === null) {
         reject(new Error("Expected a TCP address"));
         return;
       }
+      // SAFETY: Listening with a TCP host guarantees AddressInfo, not a pipe name.
+      const tcpAddress = address as AddressInfo;
       server.close((error) => {
         if (error) reject(error);
-        else resolve(address.port);
+        else resolve(tcpAddress.port);
       });
     });
   });

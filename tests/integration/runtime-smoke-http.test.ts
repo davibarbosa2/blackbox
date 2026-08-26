@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { startRuntimeSmokeResponseSchema } from "../../src/cli/runtime-smoke-client.js";
 import {
   createBlackboxApp,
   createBlackboxApplication,
@@ -89,11 +90,9 @@ describe("runtime smoke HTTP API", () => {
     const startResponse = await app.request("/api/runtime-smokes", {
       method: "POST",
     });
-    const started = (await startResponse.json()) as {
-      smokeId: string;
-      status: string;
-      statusUrl: string;
-    };
+    const started = startRuntimeSmokeResponseSchema.parse(
+      await startResponse.json(),
+    );
 
     expect(startResponse.status).toBe(202);
     expect(started).toMatchObject({
@@ -126,7 +125,9 @@ describe("runtime smoke HTTP API", () => {
     const firstResponse = await app.request("/api/runtime-smokes", {
       method: "POST",
     });
-    const first = (await firstResponse.json()) as { smokeId: string };
+    const first = startRuntimeSmokeResponseSchema.parse(
+      await firstResponse.json(),
+    );
     const secondResponse = await app.request("/api/runtime-smokes", {
       method: "POST",
     });
@@ -173,7 +174,9 @@ describe("runtime smoke HTTP API", () => {
     const startResponse = await app.request("/api/runtime-smokes", {
       method: "POST",
     });
-    const started = (await startResponse.json()) as { smokeId: string };
+    const started = startRuntimeSmokeResponseSchema.parse(
+      await startResponse.json(),
+    );
 
     await vi.waitFor(async () => {
       const statusResponse = await app.request(
@@ -213,7 +216,9 @@ describe("runtime smoke HTTP API", () => {
       "/api/runtime-smokes",
       { method: "POST" },
     );
-    const started = (await startResponse.json()) as { smokeId: string };
+    const started = startRuntimeSmokeResponseSchema.parse(
+      await startResponse.json(),
+    );
 
     await application.shutdown();
 

@@ -1,46 +1,57 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import type {
-  RuntimeSmokeEvidence,
-  RuntimeSmokeFailureStage,
+import { z } from "zod";
+
+import {
+  runtimeSmokeEvidenceSchema,
+  runtimeSmokeFailureStageSchema,
 } from "../trueforge/runtime.js";
 
-interface RuntimeSmokeBase {
-  smokeId: string;
-  createdAt: string;
-  updatedAt: string;
-}
+const runtimeSmokeBaseSchema = z.object({
+  createdAt: z.string(),
+  smokeId: z.string(),
+  updatedAt: z.string(),
+});
 
-export interface RunningRuntimeSmoke extends RuntimeSmokeBase {
-  status: "running";
-  stage: "runtime";
-}
+const runningRuntimeSmokeSchema = runtimeSmokeBaseSchema.extend({
+  stage: z.literal("runtime"),
+  status: z.literal("running"),
+});
 
-export interface SucceededRuntimeSmoke extends RuntimeSmokeBase {
-  status: "succeeded";
-  stage: "complete";
-  result: RuntimeSmokeEvidence;
-}
+const succeededRuntimeSmokeSchema = runtimeSmokeBaseSchema.extend({
+  result: runtimeSmokeEvidenceSchema,
+  stage: z.literal("complete"),
+  status: z.literal("succeeded"),
+});
 
-export interface FailedRuntimeSmoke extends RuntimeSmokeBase {
-  status: "failed";
-  stage: RuntimeSmokeFailureStage | "runtime";
-  error: {
-    message: string;
-  };
-}
+const failedRuntimeSmokeSchema = runtimeSmokeBaseSchema.extend({
+  error: z.object({ message: z.string() }),
+  stage: z.union([runtimeSmokeFailureStageSchema, z.literal("runtime")]),
+  status: z.literal("failed"),
+});
 
-export interface CancelledRuntimeSmoke extends RuntimeSmokeBase {
-  status: "cancelled";
-  stage: "runtime";
-}
+const cancelledRuntimeSmokeSchema = runtimeSmokeBaseSchema.extend({
+  stage: z.literal("runtime"),
+  status: z.literal("cancelled"),
+});
 
-export type RuntimeSmokeRecord =
-  | CancelledRuntimeSmoke
-  | RunningRuntimeSmoke
-  | SucceededRuntimeSmoke
-  | FailedRuntimeSmoke;
+export const runtimeSmokeRecordSchema = z.discriminatedUnion("status", [
+  cancelledRuntimeSmokeSchema,
+  runningRuntimeSmokeSchema,
+  succeededRuntimeSmokeSchema,
+  failedRuntimeSmokeSchema,
+]);
+
+export type CancelledRuntimeSmoke = z.infer<
+  typeof cancelledRuntimeSmokeSchema
+>;
+export type RunningRuntimeSmoke = z.infer<typeof runningRuntimeSmokeSchema>;
+export type SucceededRuntimeSmoke = z.infer<
+  typeof succeededRuntimeSmokeSchema
+>;
+export type FailedRuntimeSmoke = z.infer<typeof failedRuntimeSmokeSchema>;
+export type RuntimeSmokeRecord = z.infer<typeof runtimeSmokeRecordSchema>;
 
 export class FileRuntimeSmokeStore {
   readonly #runtimeDirectory: string;
@@ -64,7 +75,7 @@ export class FileRuntimeSmokeStore {
   async read(smokeId: string): Promise<RuntimeSmokeRecord | undefined> {
     try {
       const contents = await readFile(this.resultPath(smokeId), "utf8");
-      return JSON.parse(contents) as RuntimeSmokeRecord;
+      return runtimeSmokeRecordSchema.parse(JSON.parse(contents));
     } catch (error) {
       if (isMissingFile(error)) {
         return undefined;
@@ -78,6 +89,6 @@ export class FileRuntimeSmokeStore {
   }
 }
 
-function isMissingFile(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
+function isMissingFile(cause: unknown): cause is NodeJS.ErrnoException {
+  return cause instanceof Error && "code" in cause && cause.code === "ENOENT";
 }

@@ -74,7 +74,7 @@ describe("runtime smoke command HTTP client", () => {
         return Response.json({ smokeId: "smoke-1", status: "running" });
       }
       return Response.json({
-        result: { turn: { status: "done" } },
+        result: EVIDENCE,
         smokeId: "smoke-1",
         status: "succeeded",
       });
