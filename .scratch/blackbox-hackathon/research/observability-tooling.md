@@ -12,7 +12,7 @@ BLACKBOX should therefore own one append-only Incident evidence ledger and deriv
 2. audit events written transactionally by the scenario MCP around tool execution, policy decisions, and state changes; and
 3. External Sink receipts plus a bounded verification record when absence is asserted.
 
-Langfuse would add a strong developer-facing trace tree, session replay, filtering, token/cost/latency analytics, annotations, and later evaluation workflows. Those are valuable observability projections, not Vulnerability Proof. Preserve a one-way exporter seam from finalized/redacted BLACKBOX evidence to OTLP/Langfuse; an exporter failure must never change an Incident Run, Run Verdict, or demo state.
+Langfuse would add a strong developer-facing trace tree, session replay, filtering, token/cost/latency analytics, annotations, and later evaluation workflows. Those are valuable observability projections, not Vulnerability Proof. Preserve a one-way exporter seam from finalized/redacted BLACKBOX evidence to OTLP/Langfuse; an exporter failure must never change a Run, Run Verdict, or demo state.
 
 ## Why the TrueForge history is enough for agent actions
 
@@ -107,7 +107,7 @@ interface EvidenceExporter {
 The MVP implementation may provide only `NoopEvidenceExporter`. A future `OtlpEvidenceExporter` should:
 
 - run asynchronously after bundle finalization;
-- emit one trace per Incident Run and group related runs by Incident/session id;
+- emit one trace per Run and group related runs by Incident/session id;
 - preserve `incident_run_id`, `evidence_bundle_hash`, source ids, policy version, and verdict as searchable attributes;
 - redact the Canary Secret and sensitive tool payloads before they leave the evidence boundary;
 - be idempotent and retryable from an outbox keyed by the bundle hash; and

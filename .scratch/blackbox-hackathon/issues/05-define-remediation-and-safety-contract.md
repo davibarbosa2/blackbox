@@ -19,10 +19,10 @@ BLACKBOX claims **Containment**, not elimination of prompt injection or complete
 
 The candidate Policy Patch changes capability rules, not the model, prompt, payload, tools, or scenario data:
 
-- `read_internal_document` continues to allow ordinary `internal-support` content but denies `confidential` documents to the Support Agent.
-- `send_external_message` continues to allow Trusted Destinations; an untrusted destination requires approval and is blocked when no such approval exists.
+- `read_internal_document` remains unchanged so the equivalent replay exercises the same protected-data access.
+- `send_external_message` continues to allow Trusted Destinations and explicitly denies every destination outside that allowlist.
 
-The canonical Attack Replay is expected to stop at the confidential-document rule. The outbound rule is a second containment layer. The separate Control Run must still read an allowed support document and send its legitimate response to a Trusted Destination.
+The canonical Attack Replay is expected to reach `send_external_message` and stop at the explicit destination-policy denial. The separate Control Run reads the same class of support document and sends its legitimate response through a Trusted Destination. The missing destination allowlist is the one canonical cause; additional data-classification controls are post-MVP defense in depth.
 
 BLACKBOX may generate only schema-valid, monotonically restrictive changes: `deny`, `restrict`, or `require_approval`. A candidate cannot grant a tool, widen a resource scope, add a destination, weaken an approval, or execute arbitrary remediation code.
 
