@@ -20,6 +20,11 @@ export type StartRuntimeSmokeResult =
       activeSmokeId: string;
     };
 
+interface PublicRuntimeSmokeFailure {
+  message: string;
+  stage: RuntimeSmokeStageError["stage"] | "runtime";
+}
+
 export class RuntimeSmokeCoordinator {
   readonly #runtime: TrueForgeRuntime;
   readonly #store: FileRuntimeSmokeStore;
@@ -116,12 +121,9 @@ export class RuntimeSmokeCoordinator {
   }
 }
 
-function publicFailure(error: unknown): {
-  message: string;
-  stage: RuntimeSmokeStageError["stage"] | "runtime";
-} {
+function publicFailure(cause: unknown): PublicRuntimeSmokeFailure {
   return {
-    message: error instanceof Error ? error.message : "Runtime smoke failed",
-    stage: error instanceof RuntimeSmokeStageError ? error.stage : "runtime",
+    message: cause instanceof Error ? cause.message : "Runtime smoke failed",
+    stage: cause instanceof RuntimeSmokeStageError ? cause.stage : "runtime",
   };
 }

@@ -1,4 +1,14 @@
 import type { TrueForgeApi } from "@truefoundry/trueforge-sdk";
+import { z } from "zod";
+
+const execResponseSchema = z.object({
+  response: z.object({
+    exitCode: z.number(),
+    result: z.string(),
+  }),
+});
+
+type ExecResponse = z.infer<typeof execResponseSchema>["response"];
 
 export interface SandboxExecutionEvidence {
   exitCode: 0;
@@ -49,27 +59,11 @@ export function findSuccessfulSandboxExecution(
 
 function parseExecResponse(
   content: string,
-): { exitCode: number; result: string } | undefined {
+): ExecResponse | undefined {
   try {
-    const parsed: unknown = JSON.parse(content);
-    if (!isObject(parsed) || !isObject(parsed.response)) {
-      return undefined;
-    }
-    if (
-      typeof parsed.response.exitCode !== "number" ||
-      typeof parsed.response.result !== "string"
-    ) {
-      return undefined;
-    }
-    return {
-      exitCode: parsed.response.exitCode,
-      result: parsed.response.result,
-    };
+    const parsed = execResponseSchema.safeParse(JSON.parse(content));
+    return parsed.success ? parsed.data.response : undefined;
   } catch {
     return undefined;
   }
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

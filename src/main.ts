@@ -66,8 +66,8 @@ function observeShutdownSignals(): ShutdownObservation {
   };
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function message(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 async function writeOutput(output: string): Promise<void> {
@@ -79,7 +79,7 @@ async function writeOutput(output: string): Promise<void> {
   });
 }
 
-void main().catch((error: unknown) => {
-  process.stderr.write(`BLACKBOX failed: ${message(error)}\n`);
+void main().catch((cause: unknown) => {
+  process.stderr.write(`BLACKBOX failed: ${message(cause)}\n`);
   process.exitCode = 1;
 });

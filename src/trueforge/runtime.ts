@@ -1,56 +1,65 @@
-export interface RuntimeSmokeEvidence {
-  agent: {
-    id: string;
-    name: string;
-  };
-  health: {
-    body: "OK!";
-    status: 200;
-  };
-  provider: {
-    name: string;
-    upstreamModelId: string;
-    modelAlias: string;
-    trueForgeModel: string;
-  };
-  preflight: {
-    finishReason: "tool_calls";
-    responseModel: string;
-    toolCallId: string;
-    toolName: string;
-  };
-  sandbox: {
-    event: "sandbox.created";
-    id: string;
-  };
-  execution: {
-    exitCode: 0;
-    stdout: string;
-    toolCallId: string;
-  };
-  turn: {
-    sessionId: string;
-    turnId: string;
-    status: "done";
-  };
-  reconciliation: {
-    complete: boolean;
-    liveEventIds: string[];
-    persistedEventIds: string[];
-  };
-  versions: {
-    node: string;
-    pnpm: "11.16.0";
-    trueForge: "0.1.4";
-    trueForgeSdk: "0.1.3";
-  };
-}
+import { z } from "zod";
 
-export type RuntimeSmokeFailureStage =
-  | "health"
-  | "configuration"
-  | "preflight"
-  | "sandbox-smoke";
+export const runtimeSmokeEvidenceSchema = z.object({
+  agent: z.object({
+    id: z.string(),
+    name: z.string(),
+  }),
+  execution: z.object({
+    exitCode: z.literal(0),
+    stdout: z.string(),
+    toolCallId: z.string(),
+  }),
+  health: z.object({
+    body: z.literal("OK!"),
+    status: z.literal(200),
+  }),
+  preflight: z.object({
+    finishReason: z.literal("tool_calls"),
+    responseModel: z.string(),
+    toolCallId: z.string(),
+    toolName: z.string(),
+  }),
+  provider: z.object({
+    modelAlias: z.string(),
+    name: z.string(),
+    trueForgeModel: z.string(),
+    upstreamModelId: z.string(),
+  }),
+  reconciliation: z.object({
+    complete: z.boolean(),
+    liveEventIds: z.array(z.string()),
+    persistedEventIds: z.array(z.string()),
+  }),
+  sandbox: z.object({
+    event: z.literal("sandbox.created"),
+    id: z.string(),
+  }),
+  turn: z.object({
+    sessionId: z.string(),
+    status: z.literal("done"),
+    turnId: z.string(),
+  }),
+  versions: z.object({
+    node: z.string(),
+    pnpm: z.literal("11.16.0"),
+    trueForge: z.literal("0.1.4"),
+    trueForgeSdk: z.literal("0.1.3"),
+  }),
+});
+
+export type RuntimeSmokeEvidence = z.infer<typeof runtimeSmokeEvidenceSchema>;
+
+export const runtimeSmokeFailureStageSchema = z.enum([
+  "health",
+  "configuration",
+  "preflight",
+  "sandbox-smoke",
+]);
+
+export type RuntimeSmokeFailureStage = z.infer<
+  typeof runtimeSmokeFailureStageSchema
+>;
 
 export class RuntimeSmokeStageError extends Error {
   readonly stage: RuntimeSmokeFailureStage;

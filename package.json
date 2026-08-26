@@ -9,6 +9,7 @@
     "pnpm": "11.16.0"
   },
   "scripts": {
+    "lint": "oxlint",
     "smoke:runtime": "tsx src/cli/runtime-smoke.ts",
     "start": "tsx src/main.ts",
     "test": "vitest run",
@@ -22,10 +23,13 @@
     "@truefoundry/trueforge": "0.1.4",
     "@truefoundry/trueforge-sdk": "0.1.3",
     "dotenv": "17.4.2",
-    "hono": "4.13.4"
+    "hono": "4.13.4",
+    "zod": "4.4.3"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.80.0",
     "@types/node": "22.20.1",
+    "oxlint": "1.80.0",
     "tsx": "4.23.12",
     "typescript": "7.0.2",
     "vitest": "4.1.11"

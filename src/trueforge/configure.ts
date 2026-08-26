@@ -12,16 +12,23 @@ export interface PreparedTrueForge {
   trueForgeModel: string;
 }
 
+interface TrueForgeRequestOptions {
+  abortSignal?: AbortSignal;
+  maxRetries: 0;
+}
+
 export async function configureTrueForge(
   client: TrueForge,
   config: RuntimeConfig,
   signal?: AbortSignal,
 ): Promise<PreparedTrueForge> {
   signal?.throwIfAborted();
-  const requestOptions = {
+  const requestOptions: TrueForgeRequestOptions = {
     maxRetries: 0,
-    ...(signal ? { abortSignal: signal } : {}),
   };
+  if (signal !== undefined) {
+    requestOptions.abortSignal = signal;
+  }
   await client.settings.modelProviders.createOrUpdate({
     manifest: {
       auth: { apiKey: config.openRouter.apiKey },

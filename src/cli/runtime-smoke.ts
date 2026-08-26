@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { parseRuntimeConfig } from "../config.js";
 import { assertPortAvailable } from "../process/port.js";
 import {
+  blackboxHealthResponseSchema,
   formatRuntimeSmokeSuccess,
   runRuntimeSmokeViaHttp,
 } from "./runtime-smoke-client.js";
@@ -91,14 +92,10 @@ async function waitForBlackbox(
       const response = await fetch(`${baseUrl}/healthz`, {
         signal: AbortSignal.timeout(500),
       });
-      const body: unknown = await response.json();
-      if (
-        response.ok &&
-        typeof body === "object" &&
-        body !== null &&
-        "status" in body &&
-        body.status === "ok"
-      ) {
+      const body = blackboxHealthResponseSchema.safeParse(
+        await response.json(),
+      );
+      if (response.ok && body.success) {
         return;
       }
     } catch {
@@ -179,11 +176,11 @@ async function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function message(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
-void main().catch((error: unknown) => {
-  process.stderr.write(`Runtime smoke failed: ${message(error)}\n`);
+void main().catch((cause: unknown) => {
+  process.stderr.write(`Runtime smoke failed: ${message(cause)}\n`);
   if (process.exitCode === undefined) process.exitCode = 1;
 });

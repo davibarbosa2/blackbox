@@ -16,6 +16,12 @@ export interface TrueForgeExecutionEvidence {
   turn: RuntimeSmokeEvidence["turn"];
 }
 
+interface TrueForgeRequestOptions {
+  abortSignal?: AbortSignal;
+  maxRetries: 0;
+  timeoutInSeconds?: number;
+}
+
 export async function executeTrueForgeSmoke(
   client: TrueForge,
   agentName: string,
@@ -23,7 +29,7 @@ export async function executeTrueForgeSmoke(
 ): Promise<TrueForgeExecutionEvidence> {
   const session = await client.sessions.create(
     { agent: { name: agentName } },
-    { ...(signal ? { abortSignal: signal } : {}), maxRetries: 0 },
+    requestOptions(signal),
   );
   const stream = await client.sessions.createTurnStream(
     session.data.id,
@@ -37,11 +43,7 @@ export async function executeTrueForgeSmoke(
       ],
       previousTurnId: "none",
     },
-    {
-      ...(signal ? { abortSignal: signal } : {}),
-      maxRetries: 0,
-      timeoutInSeconds: 10 * 60,
-    },
+    requestOptions(signal, 10 * 60),
   );
 
   const liveEvents: TrueForgeApi.TurnStreamingEvent[] = [];
@@ -78,7 +80,7 @@ export async function executeTrueForgeSmoke(
   const turn = await client.sessions.getTurn(
     session.data.id,
     turnCreated.turnId,
-    { ...(signal ? { abortSignal: signal } : {}), maxRetries: 0 },
+    requestOptions(signal),
   );
   if (turn.data.state.status !== "done") {
     throw new Error(
@@ -90,7 +92,7 @@ export async function executeTrueForgeSmoke(
     session.data.id,
     turnCreated.turnId,
     { limit: 100, order: "asc" },
-    { ...(signal ? { abortSignal: signal } : {}), maxRetries: 0 },
+    requestOptions(signal),
   );
   const persistedEvents: TrueForgeApi.SessionEvent[] = [];
   for await (const event of page) {
@@ -116,4 +118,18 @@ export async function executeTrueForgeSmoke(
       turnId: turnCreated.turnId,
     },
   };
+}
+
+function requestOptions(
+  signal?: AbortSignal,
+  timeoutInSeconds?: number,
+): TrueForgeRequestOptions {
+  const options: TrueForgeRequestOptions = { maxRetries: 0 };
+  if (signal !== undefined) {
+    options.abortSignal = signal;
+  }
+  if (timeoutInSeconds !== undefined) {
+    options.timeoutInSeconds = timeoutInSeconds;
+  }
+  return options;
 }
