@@ -63,4 +63,48 @@ describe("BLACKBOX server lifecycle", () => {
     await expect(findAvailablePort(blackboxPort)).resolves.toBe(blackboxPort);
     await rm(runtimeDirectory, { force: true, recursive: true });
   });
+
+  it("defensively stops a partially started TrueForge process", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-server-"));
+    const blackboxPort = await findAvailablePort();
+    const trueForgePort = await findAvailablePort();
+    const lifecycle: string[] = [];
+    const startupError = new Error("TrueForge post-start failure");
+    const trueForgeProcess: OwnedTrueForgeProcess = {
+      async start() {
+        lifecycle.push("trueforge:start");
+        throw startupError;
+      },
+      async stop() {
+        lifecycle.push("trueforge:stop");
+      },
+    };
+    const trueForgeRuntime: TrueForgeRuntime = {
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const config: RuntimeConfig = {
+      blackbox: { host: "127.0.0.1", port: blackboxPort },
+      daytona: { apiKey: "daytona-secret" },
+      openRouter: {
+        apiKey: "openrouter-secret",
+        baseUrl: "https://openrouter.example/api/v1",
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForge: {
+        baseUrl: `http://127.0.0.1:${trueForgePort}`,
+        host: "127.0.0.1",
+        port: trueForgePort,
+        sqlitePath: join(runtimeDirectory, "trueforge.sqlite"),
+      },
+    };
+
+    await expect(
+      startBlackboxServer(config, { trueForgeProcess, trueForgeRuntime }),
+    ).rejects.toBe(startupError);
+    expect(lifecycle).toEqual(["trueforge:start", "trueforge:stop"]);
+    await expect(findAvailablePort(blackboxPort)).resolves.toBe(blackboxPort);
+    await rm(runtimeDirectory, { force: true, recursive: true });
+  });
 });

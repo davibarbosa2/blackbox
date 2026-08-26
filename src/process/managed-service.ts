@@ -30,7 +30,8 @@ export class ManagedServiceProcess {
     this.#options = options;
   }
 
-  async start(): Promise<void> {
+  async start(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.#child !== undefined) {
       throw new Error(`${this.#options.name} is already started`);
     }
@@ -60,7 +61,7 @@ export class ManagedServiceProcess {
     });
 
     try {
-      await this.#waitUntilHealthy();
+      await this.#waitUntilHealthy(signal);
     } catch (error) {
       await this.stop();
       throw error;
@@ -90,10 +91,11 @@ export class ManagedServiceProcess {
     this.#exitPromise = undefined;
   }
 
-  async #waitUntilHealthy(): Promise<void> {
+  async #waitUntilHealthy(signal?: AbortSignal): Promise<void> {
     const deadline = Date.now() + this.#options.health.timeoutMs;
 
     while (Date.now() < deadline) {
+      signal?.throwIfAborted();
       if (this.#spawnError !== undefined) {
         throw new Error(
           `${this.#options.name} failed to start: ${this.#spawnError.message}`,
@@ -105,7 +107,10 @@ export class ManagedServiceProcess {
 
       try {
         const response = await fetch(this.#options.health.url, {
-          signal: AbortSignal.timeout(500),
+          signal:
+            signal === undefined
+              ? AbortSignal.timeout(500)
+              : AbortSignal.any([signal, AbortSignal.timeout(500)]),
         });
         if (
           response.ok &&
@@ -114,10 +119,11 @@ export class ManagedServiceProcess {
           return;
         }
       } catch {
+        signal?.throwIfAborted();
         // The child may still be binding its socket.
       }
 
-      await delay(50);
+      await delay(50, signal);
     }
 
     throw new Error(
@@ -146,6 +152,21 @@ async function settlesWithin(
   });
 }
 
-async function delay(milliseconds: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+async function delay(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const complete = (): void => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = (): void => {
+      clearTimeout(timeout);
+      reject(signal?.reason);
+    };
+    const timeout = setTimeout(complete, milliseconds);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }

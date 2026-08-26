@@ -75,6 +75,32 @@ describe("managed service process", () => {
     );
   });
 
+  it("stops its owned child when startup is cancelled", async () => {
+    const port = await findAvailablePort();
+    const service = new ManagedServiceProcess({
+      args: ["-e", HEALTH_SERVER_SOURCE],
+      command: process.execPath,
+      environment: { TEST_PORT: String(port) },
+      health: {
+        expectedBody: "NOT_READY",
+        timeoutMs: 10_000,
+        url: `http://127.0.0.1:${port}/healthz`,
+      },
+      name: "cancelled-service",
+      shutdownTimeoutMs: 2_000,
+    });
+    services.push(service);
+    const cancellation = new Error("startup cancelled");
+    const controller = new AbortController();
+
+    const starting = service.start(controller.signal);
+    await waitUntilReachable(`http://127.0.0.1:${port}/healthz`);
+    controller.abort(cancellation);
+
+    await expect(starting).rejects.toBe(cancellation);
+    await expect(canListen(port)).resolves.toBe(true);
+  });
+
   it("reports a spawn failure without hanging its cleanup path", async () => {
     const service = new ManagedServiceProcess({
       args: [],
@@ -127,6 +153,19 @@ async function canListen(port: number): Promise<boolean> {
       server.close(() => resolve(true));
     });
   });
+}
+
+async function waitUntilReachable(url: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(url);
+      return;
+    } catch {
+      await delay(20);
+    }
+  }
+  throw new Error(`Service did not become reachable at ${url}`);
 }
 
 async function delay(milliseconds: number): Promise<void> {

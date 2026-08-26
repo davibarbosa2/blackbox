@@ -67,6 +67,11 @@ export async function runOpenRouterToolPreflight(
       `OpenRouter preflight did not call ${PREFLIGHT_TOOL_NAME} as required`,
     );
   }
+  if (evidence.responseModel !== config.modelId) {
+    throw new Error(
+      `OpenRouter preflight returned model ${evidence.responseModel}, expected ${config.modelId}`,
+    );
+  }
   return evidence;
 }
 

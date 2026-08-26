@@ -50,4 +50,40 @@ describe("pinned TrueForge process", () => {
     await trueForge.stop();
     await expect(findAvailablePort(port)).resolves.toBe(port);
   }, 20_000);
+
+  it("stops the owned service when SQLite permission hardening fails", async () => {
+    const runtimeDirectory = await mkdtemp(
+      join(tmpdir(), "blackbox-trueforge-permissions-"),
+    );
+    directories.push(runtimeDirectory);
+    const port = await findAvailablePort();
+    const sqlitePath = join(runtimeDirectory, "trueforge.sqlite");
+    const permissionError = new Error("chmod failed");
+    const lifecycle: string[] = [];
+    const trueForge = createTrueForgeProcess(
+      {
+        baseUrl: `http://127.0.0.1:${port}`,
+        host: "127.0.0.1",
+        port,
+        sqlitePath,
+      },
+      process.cwd(),
+      {
+        async changeMode(path) {
+          if (String(path) === sqlitePath) throw permissionError;
+        },
+        service: {
+          async start() {
+            lifecycle.push("start");
+          },
+          async stop() {
+            lifecycle.push("stop");
+          },
+        },
+      },
+    );
+
+    await expect(trueForge.start()).rejects.toBe(permissionError);
+    expect(lifecycle).toEqual(["start", "stop"]);
+  });
 });

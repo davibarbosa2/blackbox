@@ -23,55 +23,69 @@ export interface RunningBlackboxServer {
 export async function startBlackboxServer(
   config: RuntimeConfig,
   dependencies: BlackboxServerDependencies = {},
+  signal?: AbortSignal,
 ): Promise<RunningBlackboxServer> {
+  signal?.throwIfAborted();
   await assertPortAvailable(
     config.blackbox.host,
     config.blackbox.port,
     "BLACKBOX",
   );
+  signal?.throwIfAborted();
   const trueForgeProcess =
     dependencies.trueForgeProcess ??
     createTrueForgeProcess(config.trueForge, process.cwd());
   const trueForgeRuntime =
     dependencies.trueForgeRuntime ?? createSdkTrueForgeRuntime(config);
 
-  await trueForgeProcess.start();
-  const application = createBlackboxApplication({
-    runtimeDirectory: config.runtimeDirectory,
-    trueForgeRuntime,
-  });
-
-  let httpServer: ServerType;
   try {
-    httpServer = await listen(
-      application.app.fetch,
-      config.blackbox.host,
-      config.blackbox.port,
-    );
+    await trueForgeProcess.start(signal);
   } catch (error) {
     await trueForgeProcess.stop();
     throw error;
   }
 
-  let stopping: Promise<void> | undefined;
-  return {
-    stop(): Promise<void> {
-      stopping ??= (async () => {
-        const closed = close(httpServer);
-        try {
-          await application.shutdown();
-        } finally {
+  try {
+    signal?.throwIfAborted();
+    const application = createBlackboxApplication({
+      runtimeDirectory: config.runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const httpServer = await listen(
+      application.app.fetch,
+      config.blackbox.host,
+      config.blackbox.port,
+    );
+    let stopping: Promise<void> | undefined;
+    const runningServer: RunningBlackboxServer = {
+      stop(): Promise<void> {
+        stopping ??= (async () => {
+          const closed = close(httpServer);
           try {
-            await closed;
+            await application.shutdown();
           } finally {
-            await trueForgeProcess.stop();
+            try {
+              await closed;
+            } finally {
+              await trueForgeProcess.stop();
+            }
           }
-        }
-      })();
-      return stopping;
-    },
-    url: `http://${config.blackbox.host}:${config.blackbox.port}`,
-  };
+        })();
+        return stopping;
+      },
+      url: `http://${config.blackbox.host}:${config.blackbox.port}`,
+    };
+    try {
+      signal?.throwIfAborted();
+    } catch (error) {
+      await runningServer.stop();
+      throw error;
+    }
+    return runningServer;
+  } catch (error) {
+    await trueForgeProcess.stop();
+    throw error;
+  }
 }
 
 async function listen(
