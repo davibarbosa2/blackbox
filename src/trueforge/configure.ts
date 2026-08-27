@@ -29,6 +29,56 @@ export async function configureTrueForge(
   if (signal !== undefined) {
     requestOptions.abortSignal = signal;
   }
+  const trueForgeModel = await configureOpenRouter(
+    client,
+    config,
+    requestOptions,
+  );
+
+  let sandbox = await client.settings.sandboxProviders.createOrUpdate({
+    manifest: {
+      auth: { apiKey: config.daytona.apiKey },
+      autoArchiveIntervalInMinutes: 60,
+      autoDeleteIntervalInMinutes: 120,
+      autoStopIntervalInMinutes: 5,
+      execTimeoutMs: 120_000,
+      type: "daytona",
+    },
+  }, requestOptions);
+  const deadline = Date.now() + SANDBOX_READY_TIMEOUT_MS;
+  while (sandbox.data.status === "pending" && Date.now() < deadline) {
+    await delay(1_000, signal);
+    sandbox = await client.settings.sandboxProviders.get(requestOptions);
+  }
+  if (sandbox.data.status !== "ready") {
+    throw new Error(
+      `TrueForge Daytona provider is ${sandbox.data.status}: ${sandbox.data.statusReason ?? "no status reason"}`,
+    );
+  }
+
+  const manifest = smokeAgentManifest(trueForgeModel);
+  const agents = await client.agents.list(requestOptions);
+  const existing = agents.data.find((agent) => agent.name === SMOKE_AGENT_NAME);
+  const agent = existing
+    ? await client.agents.update(existing.id, { manifest }, requestOptions)
+    : await client.agents.create(
+        { manifest, name: SMOKE_AGENT_NAME },
+        requestOptions,
+      );
+
+  return {
+    agentId: agent.data.id,
+    agentName: SMOKE_AGENT_NAME,
+    sandboxStatus: "ready",
+    trueForgeModel,
+  };
+}
+
+export async function configureOpenRouter(
+  client: TrueForge,
+  config: RuntimeConfig,
+  requestOptions: TrueForgeRequestOptions,
+): Promise<string> {
   await client.settings.modelProviders.createOrUpdate({
     manifest: {
       auth: { apiKey: config.openRouter.apiKey },
@@ -62,45 +112,7 @@ export async function configureTrueForge(
   ) {
     throw new Error("TrueForge OpenRouter provider readback did not match configuration");
   }
-
-  let sandbox = await client.settings.sandboxProviders.createOrUpdate({
-    manifest: {
-      auth: { apiKey: config.daytona.apiKey },
-      autoArchiveIntervalInMinutes: 60,
-      autoDeleteIntervalInMinutes: 120,
-      autoStopIntervalInMinutes: 5,
-      execTimeoutMs: 120_000,
-      type: "daytona",
-    },
-  }, requestOptions);
-  const deadline = Date.now() + SANDBOX_READY_TIMEOUT_MS;
-  while (sandbox.data.status === "pending" && Date.now() < deadline) {
-    await delay(1_000, signal);
-    sandbox = await client.settings.sandboxProviders.get(requestOptions);
-  }
-  if (sandbox.data.status !== "ready") {
-    throw new Error(
-      `TrueForge Daytona provider is ${sandbox.data.status}: ${sandbox.data.statusReason ?? "no status reason"}`,
-    );
-  }
-
-  const trueForgeModel = `openrouter/${config.openRouter.modelAlias}`;
-  const manifest = smokeAgentManifest(trueForgeModel);
-  const agents = await client.agents.list(requestOptions);
-  const existing = agents.data.find((agent) => agent.name === SMOKE_AGENT_NAME);
-  const agent = existing
-    ? await client.agents.update(existing.id, { manifest }, requestOptions)
-    : await client.agents.create(
-        { manifest, name: SMOKE_AGENT_NAME },
-        requestOptions,
-      );
-
-  return {
-    agentId: agent.data.id,
-    agentName: SMOKE_AGENT_NAME,
-    sandboxStatus: "ready",
-    trueForgeModel,
-  };
+  return `openrouter/${config.openRouter.modelAlias}`;
 }
 
 function smokeAgentManifest(modelName: string): TrueForgeApi.AgentSpec {

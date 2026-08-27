@@ -25,6 +25,7 @@ describe("BLACKBOX server lifecycle", () => {
       },
     };
     const trueForgeRuntime: TrueForgeRuntime = {
+      executeBaseline: () => new Promise(() => undefined),
       executeSmoke: () => new Promise(() => undefined),
     };
     const config: RuntimeConfig = {
@@ -80,6 +81,7 @@ describe("BLACKBOX server lifecycle", () => {
       },
     };
     const trueForgeRuntime: TrueForgeRuntime = {
+      executeBaseline: () => new Promise(() => undefined),
       executeSmoke: () => new Promise(() => undefined),
     };
     const config: RuntimeConfig = {

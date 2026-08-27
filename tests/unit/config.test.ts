@@ -45,7 +45,7 @@ describe("runtime configuration", () => {
   it("honors documented model, port, host, and data-directory overrides", () => {
     const config = parseRuntimeConfig(
       {
-        BLACKBOX_HOST: "0.0.0.0",
+        BLACKBOX_HOST: "localhost",
         BLACKBOX_PORT: "3100",
         BLACKBOX_RUNTIME_DIR: "var/runtime",
         DAYTONA_API_KEY: "daytona-secret",
@@ -58,7 +58,7 @@ describe("runtime configuration", () => {
       "/workspace/blackbox",
     );
 
-    expect(config.blackbox).toEqual({ host: "0.0.0.0", port: 3100 });
+    expect(config.blackbox).toEqual({ host: "localhost", port: 3100 });
     expect(config.openRouter).toMatchObject({
       modelAlias: "tool-model",
       modelId: "vendor/tool-model",
@@ -75,6 +75,17 @@ describe("runtime configuration", () => {
         "var/runtime/trueforge.sqlite",
       ),
     });
+  });
+
+  it("rejects a non-loopback BLACKBOX host", () => {
+    expect(() =>
+      parseRuntimeConfig({
+        BLACKBOX_HOST: "0.0.0.0",
+        DAYTONA_API_KEY: "daytona-secret",
+        OPENROUTER_API_KEY: "openrouter-secret",
+        OPENROUTER_MODEL_ID: "stealth/ox-alpha",
+      }),
+    ).toThrow("BLACKBOX_HOST must be 127.0.0.1 or localhost");
   });
 
   it("rejects an invalid configured port before starting services", () => {
