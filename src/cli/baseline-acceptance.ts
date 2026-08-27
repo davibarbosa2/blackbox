@@ -5,41 +5,16 @@ import {
   formatBaselineAcceptanceSuccess,
   runBaselineAcceptanceViaHttp,
 } from "./baseline-acceptance-client.js";
-import { startOwnedBlackbox } from "./owned-blackbox.js";
+import { runOwnedBlackboxCommand } from "./run-owned-blackbox-command.js";
 
 async function main(): Promise<void> {
   const config = parseRuntimeConfig(process.env);
-  const controller = new AbortController();
-  let receivedSignal: NodeJS.Signals | undefined;
-  const abort = (signal: NodeJS.Signals): void => {
-    receivedSignal = signal;
-    controller.abort(new Error(`Received ${signal}`));
-  };
-  process.once("SIGINT", () => abort("SIGINT"));
-  process.once("SIGTERM", () => abort("SIGTERM"));
-
-  const blackbox = await startOwnedBlackbox(config, controller.signal);
-  let failure: { error: unknown } | undefined;
-  try {
-    const bundle = await runBaselineAcceptanceViaHttp(blackbox.baseUrl, {
-      signal: controller.signal,
+  await runOwnedBlackboxCommand(config, async (baseUrl, signal) => {
+    const bundle = await runBaselineAcceptanceViaHttp(baseUrl, {
+      signal,
     });
     await writeOutput(`${formatBaselineAcceptanceSuccess(bundle)}\n`);
-  } catch (error) {
-    failure = { error };
-  } finally {
-    await blackbox.stop();
-  }
-
-  if (receivedSignal === "SIGINT") {
-    process.exitCode = 130;
-    return;
-  }
-  if (receivedSignal === "SIGTERM") {
-    process.exitCode = 143;
-    return;
-  }
-  if (failure !== undefined) throw failure.error;
+  });
 }
 
 async function writeOutput(output: string): Promise<void> {

@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 import { parseRuntimeConfig } from "../config.js";
-import { startOwnedBlackbox } from "./owned-blackbox.js";
+import { runOwnedBlackboxCommand } from "./run-owned-blackbox-command.js";
 import {
   formatRuntimeSmokeSuccess,
   runRuntimeSmokeViaHttp,
@@ -10,39 +10,13 @@ import {
 async function main(): Promise<void> {
   const config = parseRuntimeConfig(process.env);
 
-  const controller = new AbortController();
-  let receivedSignal: NodeJS.Signals | undefined;
-  const abort = (signal: NodeJS.Signals): void => {
-    receivedSignal = signal;
-    controller.abort(new Error(`Received ${signal}`));
-  };
-  process.once("SIGINT", () => abort("SIGINT"));
-  process.once("SIGTERM", () => abort("SIGTERM"));
-
-  const blackbox = await startOwnedBlackbox(config, controller.signal);
-
-  let failure: { error: unknown } | undefined;
-  try {
+  await runOwnedBlackboxCommand(config, async (baseUrl, signal) => {
     const smoke = await runRuntimeSmokeViaHttp(
-      blackbox.baseUrl,
-      { signal: controller.signal },
+      baseUrl,
+      { signal },
     );
     await printSuccess(smoke, config.runtimeDirectory);
-  } catch (error) {
-    failure = { error };
-  } finally {
-    await blackbox.stop();
-  }
-
-  if (receivedSignal === "SIGINT") {
-    process.exitCode = 130;
-    return;
-  }
-  if (receivedSignal === "SIGTERM") {
-    process.exitCode = 143;
-    return;
-  }
-  if (failure !== undefined) throw failure.error;
+  });
 }
 
 async function printSuccess(

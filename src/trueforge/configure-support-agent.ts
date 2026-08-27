@@ -17,6 +17,7 @@ interface TrueForgeRequestOptions {
 export async function configureSupportAgent(
   client: TrueForge,
   config: RuntimeConfig,
+  mcpAuthorization: string,
   signal?: AbortSignal,
 ): Promise<typeof SUPPORT_AGENT_NAME> {
   signal?.throwIfAborted();
@@ -30,7 +31,7 @@ export async function configureSupportAgent(
   const mcpUrl = `http://${config.blackbox.host}:${config.blackbox.port}/mcp`;
   await client.settings.mcpServers.createOrUpdate(
     {
-      manifest: createScenarioMcpManifest(mcpUrl),
+      manifest: createScenarioMcpManifest(mcpUrl, mcpAuthorization),
     },
     requestOptions,
   );

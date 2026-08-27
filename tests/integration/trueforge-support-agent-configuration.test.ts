@@ -89,9 +89,24 @@ describe("TrueForge Support Agent configuration", () => {
       maxRetries: 0,
     });
 
-    await expect(configureSupportAgent(client, CONFIG)).resolves.toBe(
+    await expect(
+      configureSupportAgent(client, CONFIG, "run-capability"),
+    ).resolves.toBe(
       "blackbox-support-agent",
     );
+    expect(
+      requests.find((request) => request.path === "/api/v1/settings/mcp-servers"),
+    ).toMatchObject({
+      body: {
+        manifest: {
+          auth: {
+            headers: { Authorization: "Bearer run-capability" },
+            type: "header",
+          },
+          url: "http://127.0.0.1:3000/mcp",
+        },
+      },
+    });
     expect(requests.at(-1)).toMatchObject({
       body: {
         manifest: {

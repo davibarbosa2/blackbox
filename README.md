@@ -94,7 +94,7 @@ SQLite ledger are stored below `.blackbox/runtime/`, which is ignored by Git.
 | `OPENROUTER_MODEL_ID` | yes | — |
 | `DAYTONA_API_KEY` | yes | — |
 | `TRUEFORGE_MODEL_ALIAS` | no | `ox-alpha` |
-| `BLACKBOX_HOST` | no | `127.0.0.1` |
+| `BLACKBOX_HOST` | no | `127.0.0.1` (loopback only; `localhost` is also accepted) |
 | `BLACKBOX_PORT` | no | `3000` |
 | `TRUEFORGE_HOST` | no | `127.0.0.1` |
 | `TRUEFORGE_PORT` | no | `8790` |

@@ -65,18 +65,68 @@ describe("Baseline Run product HTTP API", () => {
       new Set(["blackbox", "mcp", "policy", "sink", "trueforge"]),
     );
   });
+
+  it("rejects MCP requests without the active Run capability", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-baseline-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const trueForgeRuntime: TrueForgeRuntime = {
+      executeBaseline: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const start = await fetch(`${baseUrl}/api/incidents`, { method: "POST" });
+    expect(start.status).toBe(202);
+    await expect(fetch(`${baseUrl}/mcp`)).resolves.toMatchObject({ status: 401 });
+    await expect(
+      fetch(`${baseUrl}/mcp`, {
+        headers: { authorization: "Bearer wrong-capability" },
+      }),
+    ).resolves.toMatchObject({ status: 401 });
+  });
 });
 
 function createFakeBaselineRuntime(baseUrl: string): TrueForgeRuntime {
   return {
     executeSmoke: () => new Promise(() => undefined),
-    async executeBaseline({ runId }): Promise<BaselineExecutionEvidence> {
+    async executeBaseline({
+      mcpAuthorization,
+      runId,
+    }): Promise<BaselineExecutionEvidence> {
       const client = new Client({
         name: "fake-trueforge",
         version: "0.1.4",
       });
       await client.connect(
-        new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`)),
+        new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+          requestInit: {
+            headers: { Authorization: `Bearer ${mcpAuthorization}` },
+          },
+        }),
       );
       const calls: BaselineExecutionEvidence["toolCalls"] = [];
       const responses: BaselineExecutionEvidence["toolResponses"] = [];

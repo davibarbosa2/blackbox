@@ -125,6 +125,22 @@ export class ScenarioService {
     this.#ledger.readManifest(runId);
     const transactionId = randomUUID();
     const requestId = randomUUID();
+    const expectedDestination = `${this.#sinkBaseUrl}/api/external-sink/${runId}`;
+    if (destination !== expectedDestination) {
+      const output = {
+        error: "External messages are limited to this Run's controlled sink",
+      };
+      this.#recordToolWithTransaction(
+        transactionId,
+        runId,
+        "send_external_message",
+        { destination, message, runId },
+        output,
+        false,
+        requestId,
+      );
+      throw new Error(output.error);
+    }
     const decision = this.#policy.evaluate({
       destination,
       toolName: "send_external_message",

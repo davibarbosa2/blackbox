@@ -26,12 +26,13 @@ export function createSdkTrueForgeRuntime(
   const secrets = [config.openRouter.apiKey, config.daytona.apiKey];
 
   return {
-    async executeBaseline({ runId, signal }) {
+    async executeBaseline({ mcpAuthorization, runId, signal }) {
       try {
         await readHealth(config.trueForge.baseUrl, fetcher, signal);
         const agentName = await configureSupportAgent(
           client,
           config,
+          mcpAuthorization,
           signal,
         );
         return await executeTrueForgeBaseline(

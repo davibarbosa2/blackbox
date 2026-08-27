@@ -62,8 +62,15 @@ export const externalSinkInputSchema = z.object({
   runId: z.string(),
 });
 
-export function createScenarioMcpManifest(mcpUrl: string) {
+export function createScenarioMcpManifest(
+  mcpUrl: string,
+  mcpAuthorization: string,
+) {
   return {
+    auth: {
+      headers: { Authorization: `Bearer ${mcpAuthorization}` },
+      type: "header" as const,
+    },
     description: "BLACKBOX synthetic Support Ticket and evidence scenario",
     name: SCENARIO_MCP_NAME,
     type: "remote" as const,
@@ -145,7 +152,10 @@ export function createBaselineRunManifest(
       agent: hash(
         JSON.stringify({
           agentManifest: createSupportAgentManifest(trueForgeModel),
-          mcpManifest: createScenarioMcpManifest(`${baseUrl}/mcp`),
+          mcpManifest: createScenarioMcpManifest(
+            `${baseUrl}/mcp`,
+            "<run-capability>",
+          ),
           name: SUPPORT_AGENT_NAME,
         }),
       ),

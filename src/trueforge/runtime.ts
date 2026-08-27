@@ -103,6 +103,7 @@ export type BaselineExecutionEvidence = z.infer<
 >;
 
 export interface BaselineExecutionRequest {
+  mcpAuthorization: string;
   runId: string;
   signal?: AbortSignal;
 }

@@ -126,7 +126,15 @@ function buildApp(
       const rejected =
         hostHeaderValidationResponse(request, localhostAllowedHostnames()) ??
         originValidationResponse(request, localhostAllowedOrigins());
-      return rejected ?? incident.mcp.fetch(request);
+      if (rejected !== undefined) return rejected;
+      if (
+        !incident.coordinator.isMcpAuthorized(
+          request.headers.get("authorization") ?? undefined,
+        )
+      ) {
+        return context.json({ error: "Unauthorized" }, 401);
+      }
+      return incident.mcp.fetch(request);
     });
     registerExternalSinkRoute(app, incident.ledger);
     app.post("/api/incidents", (context) => {

@@ -10,6 +10,7 @@ interface ManagedServiceOptions {
     url: string;
   };
   name: string;
+  output?: NodeJS.WritableStream;
   shutdownTimeoutMs: number;
 }
 
@@ -49,7 +50,11 @@ export class ManagedServiceProcess {
     child.stderr?.on("data", (chunk: string) => {
       this.#stderr = `${this.#stderr}${chunk}`.slice(-4_096);
     });
-    child.stdout?.resume();
+    if (this.#options.output === undefined) child.stdout?.resume();
+    else {
+      child.stdout?.pipe(this.#options.output);
+      child.stderr?.pipe(this.#options.output);
+    }
     child.on("error", (error) => {
       this.#spawnError = error;
     });

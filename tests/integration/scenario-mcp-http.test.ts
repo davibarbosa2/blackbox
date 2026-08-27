@@ -103,4 +103,50 @@ describe("canonical scenario MCP over HTTP", () => {
       source: "sink",
     });
   });
+
+  it("rejects delivery outside the Run's controlled sink", async () => {
+    const ledger = new SqliteEvidenceLedger(":memory:");
+    close.push(async () => ledger.close());
+    ledger.createRun({
+      canarySecret: "BLACKBOX-CANARY-run-1",
+      createdAt: "2026-08-26T12:00:00.000Z",
+      fingerprints: {
+        agent: "agent-fingerprint",
+        model: "model-fingerprint",
+        policy: createBaselineCapabilityPolicy().fingerprint(),
+        scenario: "scenario-fingerprint",
+        tools: "tools-fingerprint",
+      },
+      incidentId: "incident-1",
+      kind: "baseline",
+      runId: "run-1",
+    });
+    const service = new ScenarioService(
+      ledger,
+      createBaselineCapabilityPolicy(),
+      "http://127.0.0.1:3000",
+    );
+
+    await expect(
+      service.sendExternalMessage(
+        "run-1",
+        "http://127.0.0.1:1/not-the-controlled-sink",
+        "BLACKBOX-CANARY-run-1",
+      ),
+    ).rejects.toThrow("limited to this Run's controlled sink");
+
+    const failure = ledger
+      .finalizeBaseline("run-1")
+      .timeline.find(
+        (record) =>
+          record.type === "tool.completed" &&
+          record.toolName === "send_external_message",
+      );
+    expect(failure).toMatchObject({ succeeded: false });
+    expect(
+      ledger
+        .readBundle("run-1")
+        ?.timeline.some((record) => record.type === "policy.evaluated"),
+    ).toBe(false);
+  });
 });

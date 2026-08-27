@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import type {
   EvidenceBundle,
@@ -28,6 +28,7 @@ export class IncidentCoordinator {
     | {
         completion: Promise<void>;
         controller: AbortController;
+        mcpAuthorization: string;
         runId: string;
       }
     | undefined;
@@ -55,6 +56,7 @@ export class IncidentCoordinator {
 
     const incidentId = randomUUID();
     const runId = randomUUID();
+    const mcpAuthorization = randomBytes(32).toString("base64url");
     const createdAt = new Date().toISOString();
     const manifest = createBaselineRunManifest(
       incidentId,
@@ -73,10 +75,14 @@ export class IncidentCoordinator {
     ]);
 
     const controller = new AbortController();
-    const completion = this.#execute(runId, controller.signal).finally(() => {
+    const completion = this.#execute(
+      runId,
+      mcpAuthorization,
+      controller.signal,
+    ).finally(() => {
       if (this.#active?.runId === runId) this.#active = undefined;
     });
-    this.#active = { completion, controller, runId };
+    this.#active = { completion, controller, mcpAuthorization, runId };
     void completion.catch(() => undefined);
     return { incidentId, runId, started: true };
   }
@@ -88,6 +94,16 @@ export class IncidentCoordinator {
     return undefined;
   }
 
+  isMcpAuthorized(authorization: string | undefined): boolean {
+    const capability = this.#active?.mcpAuthorization;
+    if (capability === undefined || authorization === undefined) return false;
+    const expected = Buffer.from(`Bearer ${capability}`);
+    const received = Buffer.from(authorization);
+    return (
+      expected.length === received.length && timingSafeEqual(expected, received)
+    );
+  }
+
   async shutdown(): Promise<void> {
     const active = this.#active;
     if (active === undefined) return;
@@ -95,10 +111,18 @@ export class IncidentCoordinator {
     await active.completion;
   }
 
-  async #execute(runId: string, signal: AbortSignal): Promise<void> {
+  async #execute(
+    runId: string,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     let latestObservedAt = new Date().toISOString();
     try {
-      const evidence = await this.#runtime.executeBaseline({ runId, signal });
+      const evidence = await this.#runtime.executeBaseline({
+        mcpAuthorization,
+        runId,
+        signal,
+      });
       const records: EvidenceRecord[] = [
         {
           id: evidence.mcpInitialization.eventId,

@@ -27,7 +27,7 @@ export function parseRuntimeConfig(
   environment: NodeJS.ProcessEnv,
   workingDirectory = process.cwd(),
 ): RuntimeConfig {
-  const blackboxHost = environment.BLACKBOX_HOST?.trim() || "127.0.0.1";
+  const blackboxHost = localBlackboxHost(environment.BLACKBOX_HOST);
   const blackboxPort = port(environment, "BLACKBOX_PORT", 3000);
   const trueForgeHost = environment.TRUEFORGE_HOST?.trim() || "127.0.0.1";
   const trueForgePort = port(environment, "TRUEFORGE_PORT", 8790);
@@ -58,6 +58,14 @@ export function parseRuntimeConfig(
       sqlitePath: resolve(runtimeDirectory, "trueforge.sqlite"),
     },
   };
+}
+
+function localBlackboxHost(value: string | undefined): string {
+  const host = value?.trim() || "127.0.0.1";
+  if (host !== "127.0.0.1" && host !== "localhost") {
+    throw new Error("BLACKBOX_HOST must be 127.0.0.1 or localhost");
+  }
+  return host;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
