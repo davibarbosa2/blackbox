@@ -1,15 +1,14 @@
 import "dotenv/config";
 
 import { parseRuntimeConfig } from "../config.js";
-import { startOwnedBlackbox } from "./owned-blackbox.js";
 import {
-  formatRuntimeSmokeSuccess,
-  runRuntimeSmokeViaHttp,
-} from "./runtime-smoke-client.js";
+  formatBaselineAcceptanceSuccess,
+  runBaselineAcceptanceViaHttp,
+} from "./baseline-acceptance-client.js";
+import { startOwnedBlackbox } from "./owned-blackbox.js";
 
 async function main(): Promise<void> {
   const config = parseRuntimeConfig(process.env);
-
   const controller = new AbortController();
   let receivedSignal: NodeJS.Signals | undefined;
   const abort = (signal: NodeJS.Signals): void => {
@@ -20,14 +19,12 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => abort("SIGTERM"));
 
   const blackbox = await startOwnedBlackbox(config, controller.signal);
-
   let failure: { error: unknown } | undefined;
   try {
-    const smoke = await runRuntimeSmokeViaHttp(
-      blackbox.baseUrl,
-      { signal: controller.signal },
-    );
-    await printSuccess(smoke, config.runtimeDirectory);
+    const bundle = await runBaselineAcceptanceViaHttp(blackbox.baseUrl, {
+      signal: controller.signal,
+    });
+    await writeOutput(`${formatBaselineAcceptanceSuccess(bundle)}\n`);
   } catch (error) {
     failure = { error };
   } finally {
@@ -45,18 +42,12 @@ async function main(): Promise<void> {
   if (failure !== undefined) throw failure.error;
 }
 
-async function printSuccess(
-  smoke: Awaited<ReturnType<typeof runRuntimeSmokeViaHttp>>,
-  runtimeDirectory: string,
-): Promise<void> {
+async function writeOutput(output: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    process.stdout.write(
-      `${formatRuntimeSmokeSuccess(smoke, runtimeDirectory)}\n`,
-      (error) => {
-        if (error) reject(error);
-        else resolve();
-      },
-    );
+    process.stdout.write(output, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
   });
 }
 
@@ -65,6 +56,6 @@ function message(cause: unknown): string {
 }
 
 void main().catch((cause: unknown) => {
-  process.stderr.write(`Runtime smoke failed: ${message(cause)}\n`);
+  process.stderr.write(`Baseline acceptance failed: ${message(cause)}\n`);
   if (process.exitCode === undefined) process.exitCode = 1;
 });

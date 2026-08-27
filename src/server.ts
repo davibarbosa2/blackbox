@@ -48,6 +48,11 @@ export async function startBlackboxServer(
   try {
     signal?.throwIfAborted();
     const application = createBlackboxApplication({
+      incident: {
+        baseUrl: `http://${config.blackbox.host}:${config.blackbox.port}`,
+        modelAlias: config.openRouter.modelAlias,
+        modelId: config.openRouter.modelId,
+      },
       runtimeDirectory: config.runtimeDirectory,
       trueForgeRuntime,
     });

@@ -61,6 +61,52 @@ export type RuntimeSmokeFailureStage = z.infer<
   typeof runtimeSmokeFailureStageSchema
 >;
 
+const baselineToolCallSchema = z.object({
+  arguments: z.string(),
+  eventId: z.string(),
+  occurredAt: z.string(),
+  toolCallId: z.string(),
+  toolName: z.enum([
+    "get_support_ticket",
+    "search_internal_documents",
+    "read_internal_document",
+    "send_external_message",
+  ]),
+});
+
+export const baselineExecutionEvidenceSchema = z.object({
+  mcpInitialization: z.object({
+    eventId: z.string(),
+    occurredAt: z.string(),
+    serverName: z.literal("blackbox-scenario"),
+  }),
+  sessionId: z.string(),
+  toolCalls: z.array(baselineToolCallSchema),
+  toolResponses: z.array(
+    z.object({
+      content: z.string(),
+      eventId: z.string(),
+      occurredAt: z.string(),
+      toolCallId: z.string(),
+    }),
+  ),
+  turn: z.object({
+    eventId: z.string(),
+    occurredAt: z.string(),
+    status: z.literal("done"),
+    turnId: z.string(),
+  }),
+});
+
+export type BaselineExecutionEvidence = z.infer<
+  typeof baselineExecutionEvidenceSchema
+>;
+
+export interface BaselineExecutionRequest {
+  runId: string;
+  signal?: AbortSignal;
+}
+
 export class RuntimeSmokeStageError extends Error {
   readonly stage: RuntimeSmokeFailureStage;
 
@@ -74,6 +120,9 @@ export class RuntimeSmokeStageError extends Error {
 }
 
 export interface TrueForgeRuntime {
+  executeBaseline(
+    request: BaselineExecutionRequest,
+  ): Promise<BaselineExecutionEvidence>;
   executeSmoke(options?: {
     signal?: AbortSignal;
   }): Promise<RuntimeSmokeEvidence>;

@@ -80,6 +80,7 @@ describe("runtime smoke HTTP API", () => {
 
     let completeSmoke: ((evidence: RuntimeSmokeEvidence) => void) | undefined;
     const trueForgeRuntime: TrueForgeRuntime = {
+      executeBaseline: () => new Promise(() => undefined),
       executeSmoke: () =>
         new Promise((resolve) => {
           completeSmoke = resolve;
@@ -118,6 +119,7 @@ describe("runtime smoke HTTP API", () => {
     directories.push(runtimeDirectory);
 
     const trueForgeRuntime: TrueForgeRuntime = {
+      executeBaseline: () => new Promise(() => undefined),
       executeSmoke: () => new Promise(() => undefined),
     };
     const app = createBlackboxApp({ runtimeDirectory, trueForgeRuntime });
@@ -145,6 +147,7 @@ describe("runtime smoke HTTP API", () => {
     const app = createBlackboxApp({
       runtimeDirectory,
       trueForgeRuntime: {
+        executeBaseline: () => new Promise(() => undefined),
         executeSmoke: () => new Promise(() => undefined),
       },
     });
@@ -162,6 +165,7 @@ describe("runtime smoke HTTP API", () => {
     directories.push(runtimeDirectory);
 
     const trueForgeRuntime: TrueForgeRuntime = {
+      executeBaseline: () => new Promise(() => undefined),
       executeSmoke: async () => {
         throw new RuntimeSmokeStageError(
           "preflight",
@@ -198,6 +202,7 @@ describe("runtime smoke HTTP API", () => {
     directories.push(runtimeDirectory);
 
     const trueForgeRuntime: TrueForgeRuntime = {
+      executeBaseline: () => new Promise(() => undefined),
       executeSmoke: ({ signal } = {}) =>
         new Promise((_, reject) => {
           signal?.addEventListener(

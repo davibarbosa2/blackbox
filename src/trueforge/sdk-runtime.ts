@@ -2,7 +2,9 @@ import { TrueForge } from "@truefoundry/trueforge-sdk";
 
 import type { RuntimeConfig } from "../config.js";
 import { runOpenRouterToolPreflight } from "../openrouter/preflight.js";
+import { configureSupportAgent } from "./configure-support-agent.js";
 import { configureTrueForge } from "./configure.js";
+import { executeTrueForgeBaseline } from "./execute-baseline.js";
 import { executeTrueForgeSmoke } from "./execute-smoke.js";
 import {
   RuntimeSmokeStageError,
@@ -24,6 +26,26 @@ export function createSdkTrueForgeRuntime(
   const secrets = [config.openRouter.apiKey, config.daytona.apiKey];
 
   return {
+    async executeBaseline({ runId, signal }) {
+      try {
+        await readHealth(config.trueForge.baseUrl, fetcher, signal);
+        const agentName = await configureSupportAgent(
+          client,
+          config,
+          signal,
+        );
+        return await executeTrueForgeBaseline(
+          client,
+          agentName,
+          runId,
+          signal,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Baseline Run failed";
+        throw new Error(redactSecrets(message, secrets));
+      }
+    },
     async executeSmoke(options): Promise<RuntimeSmokeEvidence> {
       const health = await atStage(
         "health",
