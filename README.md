@@ -86,6 +86,17 @@ The command prints configuration fingerprints and the stable bundle hash, but
 not credentials or the Canary Secret. Durable Evidence Bundles and BLACKBOX's
 SQLite ledger are stored below `.blackbox/runtime/`, which is ignored by Git.
 
+Operational request and Baseline Run logs are written as NDJSON below
+`.evlog/logs/`. A failed acceptance command prints the Run id, sanitized failure
+cause, missing evidence, and the log location. Search a specific Run with:
+
+```bash
+rg '"runId":"<run-id>"' .evlog/logs
+```
+
+These logs are best-effort operational telemetry. The SQLite Evidence Ledger
+remains the sole source of truth for evidence completeness and verdicts.
+
 ## Configuration
 
 | Variable | Required | Default |

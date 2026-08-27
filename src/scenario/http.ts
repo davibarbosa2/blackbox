@@ -1,5 +1,5 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import type { Hono } from "hono";
+import type { Env, Hono } from "hono";
 
 import type { EvidenceLedger } from "../evidence/ledger.js";
 import {
@@ -48,8 +48,8 @@ export function createScenarioMcpHandler(service: ScenarioService) {
   });
 }
 
-export function registerExternalSinkRoute(
-  app: Hono,
+export function registerExternalSinkRoute<E extends Env>(
+  app: Hono<E>,
   ledger: EvidenceLedger,
 ): void {
   app.post(EXTERNAL_SINK_ROUTE, async (context) => {

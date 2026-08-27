@@ -6,6 +6,10 @@ import type {
   EvidenceRecord,
 } from "../evidence/ledger.js";
 import type { CapabilityPolicy } from "../policy/capability-policy.js";
+import type {
+  BaselineRunObservation,
+  BaselineRunObservationContext,
+} from "../observability/evlog.js";
 import { createBaselineRunManifest } from "../scenario/definition.js";
 import type { TrueForgeRuntime } from "../trueforge/runtime.js";
 
@@ -24,6 +28,9 @@ export class IncidentCoordinator {
   readonly #modelId: string;
   readonly #policy: CapabilityPolicy;
   readonly #runtime: TrueForgeRuntime;
+  readonly #observeBaselineRun:
+    | ((context: BaselineRunObservationContext) => BaselineRunObservation)
+    | undefined;
   #active:
     | {
         completion: Promise<void>;
@@ -40,6 +47,9 @@ export class IncidentCoordinator {
     modelAlias: string,
     modelId: string,
     baseUrl: string,
+    observeBaselineRun?: (
+      context: BaselineRunObservationContext,
+    ) => BaselineRunObservation,
   ) {
     this.#runtime = runtime;
     this.#ledger = ledger;
@@ -47,6 +57,7 @@ export class IncidentCoordinator {
     this.#modelAlias = modelAlias;
     this.#modelId = modelId;
     this.#baseUrl = baseUrl;
+    this.#observeBaselineRun = observeBaselineRun;
   }
 
   start(): StartIncidentResult {
@@ -75,9 +86,16 @@ export class IncidentCoordinator {
     ]);
 
     const controller = new AbortController();
+    const observation = this.#startObservation({
+      incidentId,
+      modelAlias: this.#modelAlias,
+      modelId: this.#modelId,
+      runId,
+    });
     const completion = this.#execute(
       runId,
       mcpAuthorization,
+      observation,
       controller.signal,
     ).finally(() => {
       if (this.#active?.runId === runId) this.#active = undefined;
@@ -114,6 +132,7 @@ export class IncidentCoordinator {
   async #execute(
     runId: string,
     mcpAuthorization: string,
+    observation: BaselineRunObservation | undefined,
     signal: AbortSignal,
   ): Promise<void> {
     let latestObservedAt = new Date().toISOString();
@@ -173,6 +192,9 @@ export class IncidentCoordinator {
         latestObservedAt,
       );
     } catch (error) {
+      const failure =
+        error instanceof Error ? error : new Error("TrueForge Run failed");
+      safelyObserve(() => observation?.failed(failure, "trueforge"));
       const failedAt = new Date().toISOString();
       this.#ledger.append([
         {
@@ -191,7 +213,26 @@ export class IncidentCoordinator {
     this.#ledger.append([
       stateRecord(runId, "VERIFYING", nextInstant(latestObservedAt)),
     ]);
-    this.#ledger.finalizeBaseline(runId);
+    const bundle = this.#ledger.finalizeBaseline(runId);
+    safelyObserve(() => observation?.completed(bundle));
+  }
+
+  #startObservation(
+    context: BaselineRunObservationContext,
+  ): BaselineRunObservation | undefined {
+    try {
+      return this.#observeBaselineRun?.(context);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function safelyObserve(operation: () => void): void {
+  try {
+    operation();
+  } catch {
+    // Operational telemetry must never affect forensic evidence or verdicts.
   }
 }
 
