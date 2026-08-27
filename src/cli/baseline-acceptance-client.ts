@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { classifyTrueForgeFailure } from "../failure.js";
 import {
   evidenceBundleSchema,
   type EvidenceBundle,
@@ -67,12 +68,34 @@ export async function runBaselineAcceptanceViaHttp(
       !bundle.data.completeness.complete
     ) {
       throw new Error(
-        `Baseline acceptance expected VULNERABLE with complete evidence, received ${bundle.data.verdict}`,
+        formatBaselineAcceptanceFailure(bundle.data),
       );
     }
     return bundle.data;
   }
   throw new Error(`Baseline Run ${started.data.runId} timed out`);
+}
+
+export function formatBaselineAcceptanceFailure(
+  bundle: EvidenceBundle,
+): string {
+  const failure = bundle.timeline.find(
+    (record) => record.type === "run.failed",
+  );
+  const details = [
+    `Baseline Run ${bundle.manifest.runId} expected VULNERABLE with complete evidence, received ${bundle.verdict}`,
+  ];
+  if (failure !== undefined) {
+    const safeFailure = classifyTrueForgeFailure(failure.message);
+    details.push(
+      `Failure at ${failure.stage}: ${safeFailure.message}`,
+    );
+  }
+  if (bundle.completeness.missing.length > 0) {
+    details.push(`Missing evidence: ${bundle.completeness.missing.join(", ")}`);
+  }
+  details.push(`Logs: .evlog/logs (search for runId ${bundle.manifest.runId})`);
+  return details.join("\n");
 }
 
 export function formatBaselineAcceptanceSuccess(

@@ -5,9 +5,17 @@ import type {
   EvidenceLedger,
   EvidenceRecord,
 } from "../evidence/ledger.js";
+import { classifyTrueForgeFailure } from "../failure.js";
 import type { CapabilityPolicy } from "../policy/capability-policy.js";
+import type {
+  BaselineRunObservation,
+  BaselineRunObservationContext,
+} from "../observability/evlog.js";
 import { createBaselineRunManifest } from "../scenario/definition.js";
-import type { TrueForgeRuntime } from "../trueforge/runtime.js";
+import type {
+  BaselineExecutionEvidence,
+  TrueForgeRuntime,
+} from "../trueforge/runtime.js";
 
 export type StartIncidentResult =
   | { incidentId: string; runId: string; started: true }
@@ -24,6 +32,9 @@ export class IncidentCoordinator {
   readonly #modelId: string;
   readonly #policy: CapabilityPolicy;
   readonly #runtime: TrueForgeRuntime;
+  readonly #observeBaselineRun:
+    | ((context: BaselineRunObservationContext) => BaselineRunObservation)
+    | undefined;
   #active:
     | {
         completion: Promise<void>;
@@ -40,6 +51,9 @@ export class IncidentCoordinator {
     modelAlias: string,
     modelId: string,
     baseUrl: string,
+    observeBaselineRun?: (
+      context: BaselineRunObservationContext,
+    ) => BaselineRunObservation,
   ) {
     this.#runtime = runtime;
     this.#ledger = ledger;
@@ -47,6 +61,7 @@ export class IncidentCoordinator {
     this.#modelAlias = modelAlias;
     this.#modelId = modelId;
     this.#baseUrl = baseUrl;
+    this.#observeBaselineRun = observeBaselineRun;
   }
 
   start(): StartIncidentResult {
@@ -75,9 +90,16 @@ export class IncidentCoordinator {
     ]);
 
     const controller = new AbortController();
+    const observation = this.#startObservation({
+      incidentId,
+      modelAlias: this.#modelAlias,
+      modelId: this.#modelId,
+      runId,
+    });
     const completion = this.#execute(
       runId,
       mcpAuthorization,
+      observation,
       controller.signal,
     ).finally(() => {
       if (this.#active?.runId === runId) this.#active = undefined;
@@ -114,84 +136,122 @@ export class IncidentCoordinator {
   async #execute(
     runId: string,
     mcpAuthorization: string,
+    observation: BaselineRunObservation | undefined,
     signal: AbortSignal,
   ): Promise<void> {
-    let latestObservedAt = new Date().toISOString();
     try {
-      const evidence = await this.#runtime.executeBaseline({
-        mcpAuthorization,
-        runId,
-        signal,
-      });
-      const records: EvidenceRecord[] = [
-        {
-          id: evidence.mcpInitialization.eventId,
-          occurredAt: evidence.mcpInitialization.occurredAt,
+      let latestObservedAt = new Date().toISOString();
+      let evidence: BaselineExecutionEvidence | undefined;
+      try {
+        evidence = await this.#runtime.executeBaseline({
+          mcpAuthorization,
           runId,
-          serverName: evidence.mcpInitialization.serverName,
-          source: "trueforge",
-          type: "mcp.initialized",
-        },
-        ...evidence.toolCalls.map(
-          (call): EvidenceRecord => ({
-            arguments: call.arguments,
-            id: call.eventId,
-            occurredAt: call.occurredAt,
+          signal,
+        });
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error("TrueForge Run failed");
+        const safeFailure = classifyTrueForgeFailure(failure.message);
+        safelyObserve(() => observation?.failed(safeFailure, "trueforge"));
+        const failedAt = new Date().toISOString();
+        this.#ledger.append([
+          {
+            id: `${runId}:failed`,
+            message: safeFailure.message,
+            occurredAt: failedAt,
             runId,
-            source: "trueforge",
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            type: "tool.called",
-          }),
-        ),
-        ...evidence.toolResponses.map(
-          (response): EvidenceRecord => ({
-            content: response.content,
-            id: response.eventId,
-            occurredAt: response.occurredAt,
-            runId,
-            source: "trueforge",
-            toolCallId: response.toolCallId,
-            type: "tool.responded",
-          }),
-        ),
-        {
-          id: evidence.turn.eventId,
-          occurredAt: evidence.turn.occurredAt,
-          runId,
-          sessionId: evidence.sessionId,
-          source: "trueforge",
-          status: evidence.turn.status,
-          turnId: evidence.turn.turnId,
-          type: "turn.completed",
-        },
-      ];
-      this.#ledger.append(records);
-      latestObservedAt = records.reduce(
-        (latest, record) =>
-          record.occurredAt > latest ? record.occurredAt : latest,
-        latestObservedAt,
-      );
-    } catch (error) {
-      const failedAt = new Date().toISOString();
+            source: "blackbox",
+            stage: "trueforge",
+            type: "run.failed",
+          },
+        ]);
+        latestObservedAt = failedAt;
+      }
+      if (evidence !== undefined) {
+        const records = baselineEvidenceRecords(runId, evidence);
+        this.#ledger.append(records);
+        latestObservedAt = records.reduce(
+          (latest, record) =>
+            record.occurredAt > latest ? record.occurredAt : latest,
+          latestObservedAt,
+        );
+      }
       this.#ledger.append([
-        {
-          id: `${runId}:failed`,
-          message:
-            error instanceof Error ? error.message : "TrueForge Run failed",
-          occurredAt: failedAt,
-          runId,
-          source: "blackbox",
-          stage: "trueforge",
-          type: "run.failed",
-        },
+        stateRecord(runId, "VERIFYING", nextInstant(latestObservedAt)),
       ]);
-      latestObservedAt = failedAt;
+      const bundle = this.#ledger.finalizeBaseline(runId);
+      safelyObserve(() => observation?.completed(bundle));
+    } catch (error) {
+      safelyObserve(() => observation?.finalizationFailed());
+      throw error;
     }
-    this.#ledger.append([
-      stateRecord(runId, "VERIFYING", nextInstant(latestObservedAt)),
-    ]);
-    this.#ledger.finalizeBaseline(runId);
+  }
+
+  #startObservation(
+    context: BaselineRunObservationContext,
+  ): BaselineRunObservation | undefined {
+    try {
+      return this.#observeBaselineRun?.(context);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function baselineEvidenceRecords(
+  runId: string,
+  evidence: BaselineExecutionEvidence,
+): EvidenceRecord[] {
+  return [
+    {
+      id: evidence.mcpInitialization.eventId,
+      occurredAt: evidence.mcpInitialization.occurredAt,
+      runId,
+      serverName: evidence.mcpInitialization.serverName,
+      source: "trueforge",
+      type: "mcp.initialized",
+    },
+    ...evidence.toolCalls.map(
+      (call): EvidenceRecord => ({
+        arguments: call.arguments,
+        id: call.eventId,
+        occurredAt: call.occurredAt,
+        runId,
+        source: "trueforge",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        type: "tool.called",
+      }),
+    ),
+    ...evidence.toolResponses.map(
+      (response): EvidenceRecord => ({
+        content: response.content,
+        id: response.eventId,
+        occurredAt: response.occurredAt,
+        runId,
+        source: "trueforge",
+        toolCallId: response.toolCallId,
+        type: "tool.responded",
+      }),
+    ),
+    {
+      id: evidence.turn.eventId,
+      occurredAt: evidence.turn.occurredAt,
+      runId,
+      sessionId: evidence.sessionId,
+      source: "trueforge",
+      status: evidence.turn.status,
+      turnId: evidence.turn.turnId,
+      type: "turn.completed",
+    },
+  ];
+}
+
+function safelyObserve(operation: () => void): void {
+  try {
+    operation();
+  } catch {
+    // Operational telemetry must never affect forensic evidence or verdicts.
   }
 }
 

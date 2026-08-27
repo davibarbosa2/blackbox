@@ -7,10 +7,12 @@ import {
   localhostAllowedOrigins,
   originValidationResponse,
 } from "@modelcontextprotocol/server";
+import type { EvlogVariables } from "evlog/hono";
 import { Hono } from "hono";
 
 import { SqliteEvidenceLedger } from "../evidence/ledger.js";
 import { IncidentCoordinator } from "../incident/coordinator.js";
+import type { BlackboxObservability } from "../observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../policy/capability-policy.js";
 import {
   createScenarioMcpHandler,
@@ -30,23 +32,26 @@ interface BlackboxAppOptions {
     modelAlias: string;
     modelId: string;
   };
+  observability?: BlackboxObservability;
   runtimeDirectory: string;
   trueForgeRuntime: TrueForgeRuntime;
 }
 
 export interface BlackboxApplication {
-  app: Hono;
+  app: Hono<EvlogVariables>;
   shutdown(): Promise<void>;
 }
 
-export function createBlackboxApp(options?: BlackboxAppOptions): Hono {
+export function createBlackboxApp(
+  options?: BlackboxAppOptions,
+): Hono<EvlogVariables> {
   const coordinator = options
     ? new RuntimeSmokeCoordinator(
         options.trueForgeRuntime,
         new FileRuntimeSmokeStore(options.runtimeDirectory),
       )
     : undefined;
-  return buildApp(coordinator);
+  return buildApp(coordinator, undefined, options?.observability);
 }
 
 export function createBlackboxApplication(
@@ -60,7 +65,7 @@ export function createBlackboxApplication(
     ? createIncidentApplication(options, options.incident)
     : undefined;
   return {
-    app: buildApp(coordinator, incident),
+    app: buildApp(coordinator, incident, options.observability),
     async shutdown(): Promise<void> {
       await Promise.all([coordinator.shutdown(), incident?.shutdown()]);
     },
@@ -96,6 +101,7 @@ function createIncidentApplication(
     incidentOptions.modelAlias,
     incidentOptions.modelId,
     incidentOptions.baseUrl,
+    options.observability?.observeBaselineRun,
   );
   return {
     coordinator,
@@ -115,8 +121,13 @@ function createIncidentApplication(
 function buildApp(
   coordinator?: RuntimeSmokeCoordinator,
   incident?: IncidentApplication,
-): Hono {
-  const app = new Hono();
+  observability?: BlackboxObservability,
+): Hono<EvlogVariables> {
+  const app = new Hono<EvlogVariables>();
+
+  if (observability !== undefined) {
+    app.use("*", observability.httpMiddleware);
+  }
 
   app.get("/healthz", (context) => context.json({ status: "ok" }));
 
@@ -147,6 +158,12 @@ function buildApp(
           },
           409,
         );
+      }
+      if (observability !== undefined) {
+        context.get("log")?.set({
+          incidentId: result.incidentId,
+          runId: result.runId,
+        });
       }
       return context.json(
         {

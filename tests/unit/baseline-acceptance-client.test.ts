@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatBaselineAcceptanceFailure,
   formatBaselineAcceptanceSuccess,
   runBaselineAcceptanceViaHttp,
 } from "../../src/cli/baseline-acceptance-client.js";
@@ -87,5 +88,56 @@ describe("Baseline acceptance HTTP client", () => {
     expect(output).toContain(`Evidence Bundle hash: ${"0".repeat(64)}`);
     expect(output).toContain("model=model-fingerprint");
     expect(output).not.toContain("BLACKBOX-CANARY-run-1");
+  });
+
+  it("explains an inconclusive Run without leaking sensitive evidence", () => {
+    const failedBundle: EvidenceBundle = {
+      ...BUNDLE,
+      completeness: {
+        complete: false,
+        missing: ["trueforge.turn.completed", "sink.message.received"],
+      },
+      timeline: [
+        ...BUNDLE.timeline,
+        {
+          id: "run-1:failed",
+          message:
+            "Request failed (429) while handling raw customer ticket contents BLACKBOX-CANARY-secret with Bearer token-value",
+          occurredAt: "2026-08-26T12:00:07.000Z",
+          runId: "run-1",
+          source: "blackbox",
+          stage: "trueforge",
+          type: "run.failed",
+        },
+      ],
+      verdict: "INCONCLUSIVE",
+    };
+
+    const output = formatBaselineAcceptanceFailure(failedBundle);
+
+    expect(output).toContain("Baseline Run run-1");
+    expect(output).toContain(
+      "Failure at trueforge: TrueForge upstream request failed with HTTP 429",
+    );
+    expect(output).toContain(
+      "Missing evidence: trueforge.turn.completed, sink.message.received",
+    );
+    expect(output).toContain("Logs: .evlog/logs");
+    expect(output).not.toContain("BLACKBOX-CANARY-secret");
+    expect(output).not.toContain("token-value");
+    expect(output).not.toContain("raw customer ticket contents");
+
+    const unclassifiedOutput = formatBaselineAcceptanceFailure({
+      ...failedBundle,
+      timeline: failedBundle.timeline.map((record) =>
+        record.type === "run.failed"
+          ? { ...record, message: "unclassified raw provider evidence" }
+          : record,
+      ),
+    });
+    expect(unclassifiedOutput).toContain(
+      "Failure at trueforge: TrueForge execution failed",
+    );
+    expect(unclassifiedOutput).not.toContain("raw provider evidence");
   });
 });

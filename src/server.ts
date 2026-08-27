@@ -2,6 +2,7 @@ import { serve, type ServerType } from "@hono/node-server";
 
 import type { RuntimeConfig } from "./config.js";
 import { createBlackboxApplication } from "./http/app.js";
+import { createBlackboxObservability } from "./observability/evlog.js";
 import { assertPortAvailable } from "./process/port.js";
 import {
   createTrueForgeProcess,
@@ -37,6 +38,9 @@ export async function startBlackboxServer(
     createTrueForgeProcess(config.trueForge, process.cwd());
   const trueForgeRuntime =
     dependencies.trueForgeRuntime ?? createSdkTrueForgeRuntime(config);
+  const observability = createBlackboxObservability({
+    secrets: [config.openRouter.apiKey, config.daytona.apiKey],
+  });
 
   try {
     await trueForgeProcess.start(signal);
@@ -55,6 +59,7 @@ export async function startBlackboxServer(
       },
       runtimeDirectory: config.runtimeDirectory,
       trueForgeRuntime,
+      observability,
     });
     const httpServer = await listen(
       application.app.fetch,
@@ -72,7 +77,11 @@ export async function startBlackboxServer(
             try {
               await closed;
             } finally {
-              await trueForgeProcess.stop();
+              try {
+                await trueForgeProcess.stop();
+              } finally {
+                await observability.flush();
+              }
             }
           }
         })();
