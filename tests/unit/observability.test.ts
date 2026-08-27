@@ -37,9 +37,11 @@ describe("BLACKBOX Evlog observability", () => {
     });
 
     observation.failed(
-      new Error(
-        "Request failed (429): openrouter-secret BLACKBOX-CANARY-sensitive",
-      ),
+      {
+        message: "TrueForge upstream request failed with HTTP 429",
+        retryable: true,
+        statusCode: 429,
+      },
       "trueforge",
     );
     observation.completed(INCONCLUSIVE_BUNDLE);
@@ -69,6 +71,43 @@ describe("BLACKBOX Evlog observability", () => {
     expect(serialized).not.toContain("openrouter-secret");
     expect(serialized).not.toContain("BLACKBOX-CANARY-sensitive");
     expect(serialized).not.toContain("daytona-secret");
+  });
+
+  it("emits a terminal event when evidence finalization fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "blackbox-evlog-"));
+    cleanup.push(directory);
+    const logDirectory = join(directory, "logs");
+    const observability = createBlackboxObservability({
+      enabled: true,
+      logDirectory,
+      secrets: ["openrouter-secret", "daytona-secret"],
+      silent: true,
+    });
+    const observation = observability.observeBaselineRun({
+      incidentId: "incident-2",
+      modelAlias: "glm-5.2",
+      modelId: "z-ai/glm-5.2:free",
+      runId: "run-2",
+    });
+
+    observation.finalizationFailed();
+    await observability.flush();
+
+    const events = [];
+    for await (const event of readFsLogs({ dir: logDirectory })) {
+      events.push(event);
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: "baseline.run",
+      complete: false,
+      incidentId: "incident-2",
+      level: "error",
+      retryable: false,
+      runId: "run-2",
+      stage: "evidence-finalization",
+      verdict: "INCONCLUSIVE",
+    });
   });
 });
 

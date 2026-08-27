@@ -1,13 +1,14 @@
 import { createLogger, initLogger } from "evlog";
 import { createFsDrain } from "evlog/fs";
 import { evlog } from "evlog/hono";
-import { z } from "zod";
 
 import type { EvidenceBundle } from "../evidence/ledger.js";
+import type { SafeFailure } from "../failure.js";
 
 export interface BaselineRunObservation {
   completed(bundle: EvidenceBundle): void;
-  failed(error: Error, stage: string): void;
+  failed(failure: SafeFailure, stage: "trueforge"): void;
+  finalizationFailed(): void;
 }
 
 export interface BaselineRunObservationContext {
@@ -108,53 +109,29 @@ export function createBlackboxObservability(
           });
           log.emit();
         },
-        failed(error, stage): void {
-          const safeError = sanitizeError(error, options.secrets);
-          const statusCode = httpStatus(error, safeError.message);
-          const retryable =
-            statusCode === 429 ||
-            (statusCode !== undefined && statusCode >= 500);
-          if (statusCode === undefined) {
-            log.error(safeError, { retryable, stage });
+        failed(failure, stage): void {
+          const error = new Error(failure.message);
+          if (failure.statusCode === undefined) {
+            log.error(error, { retryable: failure.retryable, stage });
           } else {
-            log.error(safeError, { retryable, stage, statusCode });
+            log.error(error, {
+              retryable: failure.retryable,
+              stage,
+              statusCode: failure.statusCode,
+            });
           }
+        },
+        finalizationFailed(): void {
+          log.error(new Error("Evidence finalization failed"), {
+            retryable: false,
+            stage: "evidence-finalization",
+          });
+          log.set({ complete: false, verdict: "INCONCLUSIVE" });
+          log.emit();
         },
       };
     },
   };
-}
-
-function sanitizeError(error: Error, secrets: readonly string[]): Error {
-  let message = error.message.replace(
-    /BLACKBOX-CANARY-[A-Za-z0-9._:-]+/g,
-    "[REDACTED]",
-  );
-  for (const secret of secrets) {
-    if (secret.length === 0) continue;
-    message = message.replace(
-      new RegExp(escapeRegExp(secret), "g"),
-      "[REDACTED]",
-    );
-  }
-  const sanitized = new Error(message);
-  sanitized.name = error.name;
-  return sanitized;
-}
-
-const errorStatusSchema = z.object({
-  status: z.number().int().min(100).max(599).optional(),
-  statusCode: z.number().int().min(100).max(599).optional(),
-});
-
-function httpStatus(error: Error, message: string): number | undefined {
-  const parsed = errorStatusSchema.safeParse(error);
-  if (parsed.success) {
-    const status = parsed.data.status ?? parsed.data.statusCode;
-    if (status !== undefined) return status;
-  }
-  const matched = /(?:HTTP\s+|\()([1-5]\d{2})\)?/.exec(message);
-  return matched?.[1] === undefined ? undefined : Number(matched[1]);
 }
 
 function escapeRegExp(value: string): string {

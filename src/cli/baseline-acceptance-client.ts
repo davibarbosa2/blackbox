@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { classifyTrueForgeFailure } from "../failure.js";
 import {
   evidenceBundleSchema,
   type EvidenceBundle,
@@ -85,8 +86,9 @@ export function formatBaselineAcceptanceFailure(
     `Baseline Run ${bundle.manifest.runId} expected VULNERABLE with complete evidence, received ${bundle.verdict}`,
   ];
   if (failure !== undefined) {
+    const safeFailure = classifyTrueForgeFailure(failure.message);
     details.push(
-      `Failure at ${failure.stage}: ${sanitizeFailureMessage(failure.message)}`,
+      `Failure at ${failure.stage}: ${safeFailure.message}`,
     );
   }
   if (bundle.completeness.missing.length > 0) {
@@ -94,12 +96,6 @@ export function formatBaselineAcceptanceFailure(
   }
   details.push(`Logs: .evlog/logs (search for runId ${bundle.manifest.runId})`);
   return details.join("\n");
-}
-
-function sanitizeFailureMessage(message: string): string {
-  return message
-    .replace(/BLACKBOX-CANARY-[A-Za-z0-9._:-]+/g, "[REDACTED]")
-    .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
 }
 
 export function formatBaselineAcceptanceSuccess(

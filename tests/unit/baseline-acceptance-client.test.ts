@@ -102,7 +102,7 @@ describe("Baseline acceptance HTTP client", () => {
         {
           id: "run-1:failed",
           message:
-            "Request failed (429) while handling BLACKBOX-CANARY-secret with Bearer token-value",
+            "Request failed (429) while handling raw customer ticket contents BLACKBOX-CANARY-secret with Bearer token-value",
           occurredAt: "2026-08-26T12:00:07.000Z",
           runId: "run-1",
           source: "blackbox",
@@ -116,12 +116,28 @@ describe("Baseline acceptance HTTP client", () => {
     const output = formatBaselineAcceptanceFailure(failedBundle);
 
     expect(output).toContain("Baseline Run run-1");
-    expect(output).toContain("Failure at trueforge: Request failed (429)");
+    expect(output).toContain(
+      "Failure at trueforge: TrueForge upstream request failed with HTTP 429",
+    );
     expect(output).toContain(
       "Missing evidence: trueforge.turn.completed, sink.message.received",
     );
     expect(output).toContain("Logs: .evlog/logs");
     expect(output).not.toContain("BLACKBOX-CANARY-secret");
     expect(output).not.toContain("token-value");
+    expect(output).not.toContain("raw customer ticket contents");
+
+    const unclassifiedOutput = formatBaselineAcceptanceFailure({
+      ...failedBundle,
+      timeline: failedBundle.timeline.map((record) =>
+        record.type === "run.failed"
+          ? { ...record, message: "unclassified raw provider evidence" }
+          : record,
+      ),
+    });
+    expect(unclassifiedOutput).toContain(
+      "Failure at trueforge: TrueForge execution failed",
+    );
+    expect(unclassifiedOutput).not.toContain("raw provider evidence");
   });
 });
