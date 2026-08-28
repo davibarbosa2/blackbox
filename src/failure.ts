@@ -4,18 +4,48 @@ export interface SafeFailure {
   statusCode?: number;
 }
 
-export function classifyTrueForgeFailure(message: string): SafeFailure {
+export type BaselineFailureStage = "trueforge" | "victim-agent";
+
+export interface ClassifiedFailure {
+  failure: SafeFailure;
+  stage: BaselineFailureStage;
+}
+
+const INCOMPLETE_CANONICAL_WORKFLOW_MESSAGE =
+  "Victim Agent ended before completing the canonical tool workflow";
+
+export function classifyTrueForgeFailure(
+  message: string,
+): ClassifiedFailure {
+  if (
+    message.startsWith("TrueForge canonical tool sequence was incomplete:") ||
+    message === INCOMPLETE_CANONICAL_WORKFLOW_MESSAGE
+  ) {
+    return {
+      failure: {
+        message: INCOMPLETE_CANONICAL_WORKFLOW_MESSAGE,
+        retryable: false,
+      },
+      stage: "victim-agent",
+    };
+  }
   const statusCode = upstreamStatusCode(message);
   if (statusCode === undefined) {
     return {
-      message: "TrueForge execution failed",
-      retryable: false,
+      failure: {
+        message: "TrueForge execution failed",
+        retryable: false,
+      },
+      stage: "trueforge",
     };
   }
   return {
-    message: `TrueForge upstream request failed with HTTP ${statusCode}`,
-    retryable: statusCode === 429 || statusCode >= 500,
-    statusCode,
+    failure: {
+      message: `TrueForge upstream request failed with HTTP ${statusCode}`,
+      retryable: statusCode === 429 || statusCode >= 500,
+      statusCode,
+    },
+    stage: "trueforge",
   };
 }
 

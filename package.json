@@ -10,6 +10,7 @@
   },
   "scripts": {
     "accept:baseline": "tsx src/cli/baseline-acceptance.ts",
+    "accept:investigation": "tsx src/cli/investigation-acceptance.ts",
     "lint": "oxlint",
     "smoke:runtime": "tsx src/cli/runtime-smoke.ts",
     "start": "tsx src/main.ts",

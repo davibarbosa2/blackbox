@@ -3,6 +3,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import { z } from "zod";
 import { createBlackboxApplication } from "../../src/http/app.js";
 import type {
   BaselineExecutionEvidence,
+  InvestigationExecutionEvidence,
   TrueForgeRuntime,
 } from "../../src/trueforge/runtime.js";
 import { findAvailablePort } from "../support/network.js";
@@ -108,10 +110,192 @@ describe("Baseline Run product HTTP API", () => {
       }),
     ).resolves.toMatchObject({ status: 401 });
   });
+
+  it("automatically prepares the evidence-backed patch for durable approval", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-investigation-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const executeInvestigation = vi.fn(
+      async (request): Promise<InvestigationExecutionEvidence> => ({
+        analysis: {
+          artifact: {
+            commandHash: "c".repeat(64),
+            path: "/tmp/blackbox-investigation-analysis.py" as const,
+          },
+          execution: {
+            exitCode: 0 as const,
+            stdout: "BLACKBOX_INVESTIGATION_ANALYSIS_OK\n",
+            toolCallId: "call-exec",
+          },
+          sandbox: {
+            event: "sandbox.created" as const,
+            id: "v1:daytona:default.investigation-1",
+          },
+          result: {
+            bundleHash: request.bundle.bundleHash,
+            canarySha256: createHash("sha256")
+              .update(request.bundle.manifest.canarySecret)
+              .digest("hex"),
+            canonicalCause:
+              "missing_destination_allowlist_in_send_external_message" as const,
+            policyHash: request.policy.hash,
+            runId: request.bundle.manifest.runId,
+          },
+        },
+        diagnosis: {
+          canonicalCause:
+            "missing_destination_allowlist_in_send_external_message" as const,
+          summary:
+            "send_external_message allowed an untrusted destination because Capability Policy v1 has no destination allowlist",
+        },
+        pendingAction: {
+          actionId: "action-apply-1",
+          callId: "call-apply-1",
+          proposal: {
+            canonicalCause:
+              "missing_destination_allowlist_in_send_external_message" as const,
+            evidenceJustification: {
+              bundleHash: request.bundle.bundleHash,
+              runId: request.bundle.manifest.runId,
+              summary:
+                "The exact Canary Secret reached the correlated External Sink.",
+            },
+            patch: {
+              destinationAllowlist: [request.trustedDestination],
+              expectedBaseHash: request.policy.hash,
+              expectedBaseVersion: request.policy.version,
+            },
+          },
+          sessionId: "session-investigation-1",
+          toolName: "apply_policy_patch" as const,
+          turnId: "turn-investigation-1",
+        },
+        subagents: fakeInvestigationSubagents(request),
+      }),
+    );
+    executeInvestigation.mockRejectedValueOnce(
+      new Error("Request failed (503): transient TrueForge disconnect"),
+    );
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime: createFakeBaselineRuntime(
+        baseUrl,
+        executeInvestigation,
+      ),
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const bundle = await runIncident(baseUrl);
+    let incident: unknown;
+    await vi.waitFor(async () => {
+      const response = await fetch(
+        `${baseUrl}/api/incidents/${bundle.manifest.incidentId}`,
+      );
+      expect(response.status).toBe(200);
+      incident = await response.json();
+      expect(incident).toMatchObject({
+        remediation: { state: "AWAITING_APPROVAL" },
+      });
+    });
+
+    expect(executeInvestigation).toHaveBeenCalledTimes(2);
+    expect(incident).toMatchObject({
+      baseline: {
+        evidenceBundleHash: bundle.bundleHash,
+        runId: bundle.manifest.runId,
+        verdict: "VULNERABLE",
+      },
+      incidentId: bundle.manifest.incidentId,
+      remediation: {
+        diagnosis: {
+          canonicalCause:
+            "missing_destination_allowlist_in_send_external_message",
+        },
+        dryRun: {
+          affectedCapability: "send_external_message",
+          base: {
+            hash: bundle.manifest.fingerprints.policy,
+            version: 1,
+          },
+          diff: [
+            {
+              after: [`${baseUrl}/api/trusted-destination`],
+              before: "*",
+              operation: "replace",
+              path: "/rules/send_external_message/destinations",
+            },
+          ],
+        },
+        pendingDecision: {
+          actionId: "action-apply-1",
+          callId: "call-apply-1",
+          sessionId: "session-investigation-1",
+          toolName: "apply_policy_patch",
+          turnId: "turn-investigation-1",
+        },
+        lifecycle: [
+          { state: "DRAFTED" },
+          { state: "DRY_RUN_PASSED" },
+          { state: "AWAITING_APPROVAL" },
+        ],
+        state: "AWAITING_APPROVAL",
+      },
+    });
+
+    const reconnected = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime: createFakeBaselineRuntime(baseUrl),
+    });
+    const reconstructed = await reconnected.app.request(
+      `/api/incidents/${bundle.manifest.incidentId}`,
+    );
+    expect(reconstructed.status).toBe(200);
+    await expect(reconstructed.json()).resolves.toMatchObject({
+      remediation: {
+        lifecycle: [
+          { state: "DRAFTED" },
+          { state: "DRY_RUN_PASSED" },
+          { state: "AWAITING_APPROVAL" },
+        ],
+        pendingDecision: {
+          actionId: "action-apply-1",
+          callId: "call-apply-1",
+          sessionId: "session-investigation-1",
+          turnId: "turn-investigation-1",
+        },
+        state: "AWAITING_APPROVAL",
+      },
+    });
+    await reconnected.shutdown();
+  });
 });
 
-function createFakeBaselineRuntime(baseUrl: string): TrueForgeRuntime {
-  return {
+function createFakeBaselineRuntime(
+  baseUrl: string,
+  executeInvestigation?: NonNullable<
+    TrueForgeRuntime["executeInvestigation"]
+  >,
+): TrueForgeRuntime {
+  const runtime: TrueForgeRuntime = {
     executeSmoke: () => new Promise(() => undefined),
     async executeBaseline({
       mcpAuthorization,
@@ -192,6 +376,53 @@ function createFakeBaselineRuntime(baseUrl: string): TrueForgeRuntime {
       };
     },
   };
+  if (executeInvestigation !== undefined) {
+    runtime.executeInvestigation = executeInvestigation;
+  }
+  return runtime;
+}
+
+function fakeInvestigationSubagents(
+  request: Parameters<
+    NonNullable<TrueForgeRuntime["executeInvestigation"]>
+  >[0],
+): InvestigationExecutionEvidence["subagents"] {
+  return [
+    {
+      createdEventId: "event-thread-policy-created",
+      doneEventId: "event-thread-policy-done",
+      inputHash: "d".repeat(64),
+      output: {
+        marker: "POLICY_PATCH_REVIEWED",
+        policyHash: request.policy.hash,
+        policyVersion: request.policy.version,
+        protectedDocumentAccess: "unchanged",
+        trustedDestination: request.trustedDestination,
+      },
+      outputHash: "e".repeat(64),
+      role: "PolicyPatchReviewer",
+      status: "done",
+      threadId: "thread-policy",
+      title: "PolicyPatchReviewer",
+    },
+    {
+      createdEventId: "event-thread-evidence-created",
+      doneEventId: "event-thread-evidence-done",
+      inputHash: "f".repeat(64),
+      output: {
+        bundleHash: request.bundle.bundleHash,
+        canonicalCause:
+          "missing_destination_allowlist_in_send_external_message",
+        marker: "EVIDENCE_PROVENANCE_VERIFIED",
+        runId: request.bundle.manifest.runId,
+      },
+      outputHash: "1".repeat(64),
+      role: "EvidenceProvenanceVerifier",
+      status: "done",
+      threadId: "thread-evidence",
+      title: "EvidenceProvenanceVerifier",
+    },
+  ];
 }
 
 async function runIncident(baseUrl: string) {
@@ -210,6 +441,7 @@ async function runIncident(baseUrl: string) {
   });
   return z
     .object({
+      bundleHash: z.string(),
       manifest: z.object({
         canarySecret: z.string(),
         fingerprints: z.object({
@@ -219,6 +451,7 @@ async function runIncident(baseUrl: string) {
           scenario: z.string(),
           tools: z.string(),
         }),
+        incidentId: z.string(),
         runId: z.string(),
       }),
       timeline: z.array(z.object({ source: z.string() })),

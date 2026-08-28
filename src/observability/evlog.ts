@@ -3,11 +3,11 @@ import { createFsDrain } from "evlog/fs";
 import { evlog } from "evlog/hono";
 
 import type { EvidenceBundle } from "../evidence/ledger.js";
-import type { SafeFailure } from "../failure.js";
+import type { BaselineFailureStage, SafeFailure } from "../failure.js";
 
 export interface BaselineRunObservation {
   completed(bundle: EvidenceBundle): void;
-  failed(failure: SafeFailure, stage: "trueforge"): void;
+  failed(failure: SafeFailure, stage: BaselineFailureStage): void;
   finalizationFailed(): void;
 }
 

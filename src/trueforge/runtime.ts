@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import type { EvidenceBundle } from "../evidence/ledger.js";
+import { policyPatchSchema } from "../policy/capability-policy.js";
+
 export const runtimeSmokeEvidenceSchema = z.object({
   agent: z.object({
     id: z.string(),
@@ -102,10 +105,138 @@ export type BaselineExecutionEvidence = z.infer<
   typeof baselineExecutionEvidenceSchema
 >;
 
+export const evidenceJustificationSchema = z.strictObject({
+  bundleHash: z.string().length(64),
+  runId: z.string(),
+  summary: z.string().min(1),
+});
+
+export const investigationProposalSchema = z.strictObject({
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  evidenceJustification: evidenceJustificationSchema,
+  patch: policyPatchSchema,
+});
+
+const completedSubagentSchema = z.strictObject({
+  createdEventId: z.string(),
+  doneEventId: z.string(),
+  inputHash: z.string().length(64),
+  outputHash: z.string().length(64),
+  status: z.literal("done"),
+  threadId: z.string(),
+  title: z.string(),
+});
+
+export const evidenceProvenanceSubagentOutputSchema = z.strictObject({
+  bundleHash: z.string().length(64),
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  marker: z.literal("EVIDENCE_PROVENANCE_VERIFIED"),
+  runId: z.string(),
+});
+
+export const evidenceProvenanceSubagentSchema = completedSubagentSchema.extend({
+  output: evidenceProvenanceSubagentOutputSchema,
+  role: z.literal("EvidenceProvenanceVerifier"),
+});
+
+export const policyPatchSubagentOutputSchema = z.strictObject({
+  marker: z.literal("POLICY_PATCH_REVIEWED"),
+  policyHash: z.string().length(64),
+  policyVersion: z.number().int().positive(),
+  protectedDocumentAccess: z.literal("unchanged"),
+  trustedDestination: z.url(),
+});
+
+export const policyPatchSubagentSchema = completedSubagentSchema.extend({
+  output: policyPatchSubagentOutputSchema,
+  role: z.literal("PolicyPatchReviewer"),
+});
+
+export const subagentEvidenceSchema = z.discriminatedUnion("role", [
+  evidenceProvenanceSubagentSchema,
+  policyPatchSubagentSchema,
+]);
+
+export const investigationAnalysisResultSchema = z.strictObject({
+  bundleHash: z.string().length(64),
+  canarySha256: z.string().length(64),
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  policyHash: z.string().length(64),
+  runId: z.string(),
+});
+
+export const investigationAnalysisSchema = z.strictObject({
+  artifact: z.strictObject({
+    commandHash: z.string().length(64),
+    path: z.literal("/tmp/blackbox-investigation-analysis.py"),
+  }),
+  execution: z.strictObject({
+    exitCode: z.literal(0),
+    stdout: z.string(),
+    toolCallId: z.string(),
+  }),
+  sandbox: z.strictObject({
+    event: z.literal("sandbox.created"),
+    id: z.string(),
+  }),
+  result: investigationAnalysisResultSchema,
+});
+
+export const investigationDiagnosisSchema = z.strictObject({
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  summary: z.string().min(1),
+});
+
+export const pendingPolicyActionSchema = z.strictObject({
+  actionId: z.string(),
+  callId: z.string(),
+  proposal: investigationProposalSchema,
+  sessionId: z.string(),
+  toolName: z.literal("apply_policy_patch"),
+  turnId: z.string(),
+});
+
+export const investigationExecutionEvidenceSchema = z.strictObject({
+  analysis: investigationAnalysisSchema,
+  diagnosis: investigationDiagnosisSchema,
+  pendingAction: pendingPolicyActionSchema,
+  subagents: z.tuple([
+    policyPatchSubagentSchema,
+    evidenceProvenanceSubagentSchema,
+  ]),
+});
+
+export type InvestigationExecutionEvidence = z.infer<
+  typeof investigationExecutionEvidenceSchema
+>;
+
 export interface BaselineExecutionRequest {
   mcpAuthorization: string;
   runId: string;
   signal?: AbortSignal;
+}
+
+export interface InvestigationExecutionRequest {
+  bundle: EvidenceBundle;
+  mcpAuthorization: string;
+  policy: {
+    hash: string;
+    rules: {
+      read_internal_document: "allow";
+      send_external_message: { destinations: "*" };
+    };
+    version: number;
+  };
+  signal?: AbortSignal;
+  trustedDestination: string;
 }
 
 export class RuntimeSmokeStageError extends Error {
@@ -120,6 +251,16 @@ export class RuntimeSmokeStageError extends Error {
   }
 }
 
+export class InvestigationExecutionError extends Error {
+  readonly pendingActionObserved: boolean;
+
+  constructor(message: string, pendingActionObserved: boolean) {
+    super(message);
+    this.name = "InvestigationExecutionError";
+    this.pendingActionObserved = pendingActionObserved;
+  }
+}
+
 export interface TrueForgeRuntime {
   executeBaseline(
     request: BaselineExecutionRequest,
@@ -127,4 +268,7 @@ export interface TrueForgeRuntime {
   executeSmoke(options?: {
     signal?: AbortSignal;
   }): Promise<RuntimeSmokeEvidence>;
+  executeInvestigation?: (
+    request: InvestigationExecutionRequest,
+  ) => Promise<InvestigationExecutionEvidence>;
 }
