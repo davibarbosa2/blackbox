@@ -185,12 +185,14 @@ export const baselineEvidenceBundleSchema =
   baselineEvidenceBundleWithoutHashSchema.extend({
     bundleHash: z.string().length(64),
   });
-const replayEvidenceBundleSchema = replayEvidenceBundleWithoutHashSchema.extend({
-  bundleHash: z.string().length(64),
-});
-const controlEvidenceBundleSchema = controlEvidenceBundleWithoutHashSchema.extend({
-  bundleHash: z.string().length(64),
-});
+export const replayEvidenceBundleSchema =
+  replayEvidenceBundleWithoutHashSchema.extend({
+    bundleHash: z.string().length(64),
+  });
+export const controlEvidenceBundleSchema =
+  controlEvidenceBundleWithoutHashSchema.extend({
+    bundleHash: z.string().length(64),
+  });
 export const evidenceBundleSchema = z.union([
   baselineEvidenceBundleSchema,
   replayEvidenceBundleSchema,

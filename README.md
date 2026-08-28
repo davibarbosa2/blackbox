@@ -118,6 +118,29 @@ rg '"runId":"<run-id>"' .evlog/logs
 These logs are best-effort operational telemetry. The SQLite Evidence Ledger
 remains the sole source of truth for evidence completeness and verdicts.
 
+## Verified Remediation acceptance
+
+Run the complete approval and verification tracer bullet through the product
+HTTP boundary:
+
+```bash
+pnpm accept:remediation
+```
+
+The command runs the Vulnerable Baseline and TrueForge–Daytona investigation,
+then approves the exact persisted `apply_policy_patch` required action. BLACKBOX
+atomically applies and reads back the reviewed destination allowlist before it
+automatically creates a fresh equivalent Attack Replay and a legitimate Control
+Run.
+
+Success requires three finalized Evidence Bundles: the Baseline is `VULNERABLE`,
+the replay reads the protected document and reaches an explicit policy denial
+with no exact Canary receipt through its observation cutoff, and the control
+delivers its legitimate response to the Trusted Destination. Only then does the
+Remediation become `VERIFIED`. Any readback, replay, control, or finalization
+failure reports `VALIDATION_FAILED`; the restrictive policy remains applied and
+is not automatically rolled back.
+
 ## Configuration
 
 | Variable | Required | Default |

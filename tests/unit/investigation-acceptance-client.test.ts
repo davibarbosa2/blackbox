@@ -152,6 +152,7 @@ describe("Investigation acceptance HTTP client", () => {
               : {
                   baseline: PENDING_INCIDENT.baseline,
                   incidentId: PENDING_INCIDENT.incidentId,
+                  incidentStatus: "OPEN",
                   remediation:
                     reads === 1
                       ? { lifecycle: [], state: "INVESTIGATING" }

@@ -371,6 +371,26 @@ export class IncidentCoordinator {
       this.#remediations.verifying(incidentId);
       await this.#verifyRemediation(incidentId, mcpAuthorization, signal);
     } catch (error) {
+      const applied = this.#policy.readApplication(
+        request.pendingDecision.actionId,
+      );
+      const current = this.#remediations.read(incidentId);
+      if (
+        request.decision === "allow" &&
+        applied !== undefined &&
+        applied.status !== "STALE" &&
+        current?.remediation.state === "AWAITING_APPROVAL"
+      ) {
+        this.#remediations.applied(
+          incidentId,
+          {
+            ...request.pendingDecision,
+            decidedAt,
+            decision: "allow",
+          },
+          applied.readback,
+        );
+      }
       this.#remediations.validationFailed(
         incidentId,
         error instanceof Error
