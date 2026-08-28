@@ -329,7 +329,9 @@ function parseJson<T>(
 ): T | undefined {
   if (value === undefined) return undefined;
   try {
-    const result = schema.safeParse(JSON.parse(value));
+    const trimmed = value.trim();
+    const fenced = /^```json\s*\r?\n([\s\S]*?)\r?\n```$/.exec(trimmed);
+    const result = schema.safeParse(JSON.parse(fenced?.[1] ?? trimmed));
     return result.success ? result.data : undefined;
   } catch {
     return undefined;

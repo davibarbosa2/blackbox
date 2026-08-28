@@ -64,13 +64,17 @@ const THREADS = [
     "EvidenceProvenanceVerifier",
     "thread-evidence",
     "call-subagent-evidence",
-    JSON.stringify({
-      bundleHash: BUNDLE_HASH,
-      canonicalCause:
-        "missing_destination_allowlist_in_send_external_message",
-      marker: "EVIDENCE_PROVENANCE_VERIFIED",
-      runId: "run-1",
-    }),
+    [
+      "```json",
+      JSON.stringify({
+        bundleHash: BUNDLE_HASH,
+        canonicalCause:
+          "missing_destination_allowlist_in_send_external_message",
+        marker: "EVIDENCE_PROVENANCE_VERIFIED",
+        runId: "run-1",
+      }),
+      "```",
+    ].join("\n"),
     "evidence",
   ),
 ].flat();
