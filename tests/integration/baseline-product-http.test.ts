@@ -12,6 +12,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createBlackboxApplication } from "../../src/http/app.js";
+import {
+  type DurableIncidentRead,
+  durableIncidentReadSchema,
+} from "../../src/remediation/store.js";
 import type {
   BaselineExecutionEvidence,
   InvestigationExecutionEvidence,
@@ -116,63 +120,8 @@ describe("Baseline Run product HTTP API", () => {
     cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
     const port = await findAvailablePort();
     const baseUrl = `http://127.0.0.1:${port}`;
-    const executeInvestigation = vi.fn(
-      async (request): Promise<InvestigationExecutionEvidence> => ({
-        analysis: {
-          artifact: {
-            commandHash: "c".repeat(64),
-            path: "/tmp/blackbox-investigation-analysis.py" as const,
-          },
-          execution: {
-            exitCode: 0 as const,
-            stdout: "BLACKBOX_INVESTIGATION_ANALYSIS_OK\n",
-            toolCallId: "call-exec",
-          },
-          sandbox: {
-            event: "sandbox.created" as const,
-            id: "v1:daytona:default.investigation-1",
-          },
-          result: {
-            bundleHash: request.bundle.bundleHash,
-            canarySha256: createHash("sha256")
-              .update(request.bundle.manifest.canarySecret)
-              .digest("hex"),
-            canonicalCause:
-              "missing_destination_allowlist_in_send_external_message" as const,
-            policyHash: request.policy.hash,
-            runId: request.bundle.manifest.runId,
-          },
-        },
-        diagnosis: {
-          canonicalCause:
-            "missing_destination_allowlist_in_send_external_message" as const,
-          summary:
-            "send_external_message allowed an untrusted destination because Capability Policy v1 has no destination allowlist",
-        },
-        pendingAction: {
-          actionId: "action-apply-1",
-          callId: "call-apply-1",
-          proposal: {
-            canonicalCause:
-              "missing_destination_allowlist_in_send_external_message" as const,
-            evidenceJustification: {
-              bundleHash: request.bundle.bundleHash,
-              runId: request.bundle.manifest.runId,
-              summary:
-                "The exact Canary Secret reached the correlated External Sink.",
-            },
-            patch: {
-              destinationAllowlist: [request.trustedDestination],
-              expectedBaseHash: request.policy.hash,
-              expectedBaseVersion: request.policy.version,
-            },
-          },
-          sessionId: "session-investigation-1",
-          toolName: "apply_policy_patch" as const,
-          turnId: "turn-investigation-1",
-        },
-        subagents: fakeInvestigationSubagents(request),
-      }),
+    const executeInvestigation = vi.fn(async (request) =>
+      fakeInvestigationEvidence(request),
     );
     executeInvestigation.mockRejectedValueOnce(
       new Error("Request failed (503): transient TrueForge disconnect"),
@@ -286,6 +235,93 @@ describe("Baseline Run product HTTP API", () => {
       },
     });
     await reconnected.shutdown();
+  });
+
+  it("denies only the persisted required action and starts no verification Run", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-denial-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const resolvePolicyAction = vi.fn(async (request) => ({
+      decision: request.decision,
+      pendingDecision: request.pendingDecision,
+      resumedTurnId: "turn-denial",
+      status: "done" as const,
+    }));
+    const trueForgeRuntime = createFakeBaselineRuntime(
+      baseUrl,
+      async (request) => fakeInvestigationEvidence(request),
+    );
+    trueForgeRuntime.resolvePolicyAction = resolvePolicyAction;
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const bundle = await runIncident(baseUrl);
+    const awaiting = await waitForIncidentState(
+      baseUrl,
+      bundle.manifest.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (awaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+    const pendingDecision = awaiting.remediation.pendingDecision;
+    const mismatch = await fetch(
+      `${baseUrl}/api/incidents/${bundle.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "deny",
+          pendingDecision: { ...pendingDecision, callId: "substituted-call" },
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(mismatch.status).toBe(409);
+
+    const denial = await fetch(
+      `${baseUrl}/api/incidents/${bundle.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({ decision: "deny", pendingDecision }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(denial.status).toBe(202);
+    const denied = await waitForIncidentState(
+      baseUrl,
+      bundle.manifest.incidentId,
+      "DENIED",
+    );
+
+    expect(denied).toMatchObject({
+      incidentStatus: "OPEN",
+      remediation: {
+        decision: { ...pendingDecision, decision: "deny" },
+        policyReadback: {
+          hash: bundle.manifest.fingerprints.policy,
+          version: 1,
+        },
+        state: "DENIED",
+      },
+    });
+    expect(resolvePolicyAction).toHaveBeenCalledOnce();
   });
 });
 
@@ -423,6 +459,86 @@ function fakeInvestigationSubagents(
       title: "EvidenceProvenanceVerifier",
     },
   ];
+}
+
+function fakeInvestigationEvidence(
+  request: Parameters<
+    NonNullable<TrueForgeRuntime["executeInvestigation"]>
+  >[0],
+): InvestigationExecutionEvidence {
+  return {
+    analysis: {
+      artifact: {
+        commandHash: "c".repeat(64),
+        path: "/tmp/blackbox-investigation-analysis.py",
+      },
+      execution: {
+        exitCode: 0,
+        stdout: "BLACKBOX_INVESTIGATION_ANALYSIS_OK\n",
+        toolCallId: "call-exec",
+      },
+      sandbox: {
+        event: "sandbox.created",
+        id: "v1:daytona:default.investigation-1",
+      },
+      result: {
+        bundleHash: request.bundle.bundleHash,
+        canarySha256: createHash("sha256")
+          .update(request.bundle.manifest.canarySecret)
+          .digest("hex"),
+        canonicalCause:
+          "missing_destination_allowlist_in_send_external_message",
+        policyHash: request.policy.hash,
+        runId: request.bundle.manifest.runId,
+      },
+    },
+    diagnosis: {
+      canonicalCause:
+        "missing_destination_allowlist_in_send_external_message",
+      summary:
+        "send_external_message allowed an untrusted destination because Capability Policy v1 has no destination allowlist",
+    },
+    pendingAction: {
+      actionId: "action-apply-1",
+      callId: "call-apply-1",
+      proposal: {
+        canonicalCause:
+          "missing_destination_allowlist_in_send_external_message",
+        evidenceJustification: {
+          bundleHash: request.bundle.bundleHash,
+          runId: request.bundle.manifest.runId,
+          summary:
+            "The exact Canary Secret reached the correlated External Sink.",
+        },
+        patch: {
+          destinationAllowlist: [request.trustedDestination],
+          expectedBaseHash: request.policy.hash,
+          expectedBaseVersion: request.policy.version,
+        },
+      },
+      sessionId: "session-investigation-1",
+      threadId: "main",
+      toolName: "apply_policy_patch",
+      turnId: "turn-investigation-1",
+    },
+    subagents: fakeInvestigationSubagents(request),
+  };
+}
+
+async function waitForIncidentState(
+  baseUrl: string,
+  incidentId: string,
+  state: string,
+): Promise<DurableIncidentRead> {
+  let incident: DurableIncidentRead | undefined;
+  await vi.waitFor(async () => {
+    const response = await fetch(`${baseUrl}/api/incidents/${incidentId}`);
+    expect(response.status).toBe(200);
+    incident = durableIncidentReadSchema.parse(await response.json());
+    expect(incident).toMatchObject({ remediation: { state } });
+  });
+  if (incident === undefined) throw new Error("Incident was not returned");
+  return incident;
 }
 
 async function runIncident(baseUrl: string) {

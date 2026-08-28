@@ -2,12 +2,15 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { policyPatchDryRunSchema } from "../policy/capability-policy.js";
+import {
+  policyPatchDryRunSchema,
+  policyReadSchema,
+} from "../policy/capability-policy.js";
 import {
   evidenceJustificationSchema,
   investigationAnalysisSchema,
   investigationDiagnosisSchema,
-  pendingPolicyActionSchema,
+  pendingPolicyDecisionSchema,
   subagentEvidenceSchema,
 } from "../trueforge/runtime.js";
 
@@ -19,13 +22,19 @@ const baselineSchema = z.object({
 
 const lifecycleEventSchema = z.object({
   occurredAt: z.string(),
-  state: z.enum(["DRAFTED", "DRY_RUN_PASSED", "AWAITING_APPROVAL"]),
+  state: z.enum([
+    "DRAFTED",
+    "DRY_RUN_PASSED",
+    "AWAITING_APPROVAL",
+    "DENIED",
+    "STALE",
+    "APPLIED",
+    "VERIFYING",
+    "VERIFIED",
+    "VALIDATION_FAILED",
+  ]),
 });
 const lifecycleSchema = z.array(lifecycleEventSchema);
-const pendingPolicyDecisionSchema = pendingPolicyActionSchema.omit({
-  proposal: true,
-});
-
 const investigatingSchema = z.object({
   lifecycle: lifecycleSchema,
   state: z.literal("INVESTIGATING"),
@@ -61,15 +70,53 @@ const awaitingApprovalSchema = z.object({
   subagents: z.tuple([subagentEvidenceSchema, subagentEvidenceSchema]),
 });
 
+export const remediationDecisionEvidenceSchema =
+  pendingPolicyDecisionSchema.extend({
+    decidedAt: z.string(),
+    decision: z.enum(["allow", "deny"]),
+  });
+
+export const remediationDecisionRequestSchema = z.strictObject({
+  decision: z.enum(["allow", "deny"]),
+  pendingDecision: pendingPolicyDecisionSchema,
+});
+
+export type RemediationDecisionRequest = z.infer<
+  typeof remediationDecisionRequestSchema
+>;
+
+const deniedSchema = z.object({
+  decision: remediationDecisionEvidenceSchema.extend({
+    decision: z.literal("deny"),
+  }),
+  dryRun: policyPatchDryRunSchema,
+  lifecycle: lifecycleSchema,
+  policyReadback: policyReadSchema,
+  state: z.literal("DENIED"),
+});
+
+const staleSchema = z.object({
+  decision: remediationDecisionEvidenceSchema.extend({
+    decision: z.literal("allow"),
+  }),
+  dryRun: policyPatchDryRunSchema,
+  lifecycle: lifecycleSchema,
+  policyReadback: policyReadSchema,
+  state: z.literal("STALE"),
+});
+
 export const durableIncidentReadSchema = z.object({
   baseline: baselineSchema,
   incidentId: z.string(),
+  incidentStatus: z.enum(["OPEN", "RESOLVED"]),
   remediation: z.discriminatedUnion("state", [
     investigatingSchema,
     draftedSchema,
     dryRunPassedSchema,
     validationFailedSchema,
     awaitingApprovalSchema,
+    deniedSchema,
+    staleSchema,
   ]),
 });
 
@@ -78,6 +125,9 @@ export type AwaitingApprovalRemediation = z.infer<
   typeof awaitingApprovalSchema
 >;
 export type PendingPolicyDecision = z.infer<typeof pendingPolicyDecisionSchema>;
+export type RemediationDecisionEvidence = z.infer<
+  typeof remediationDecisionEvidenceSchema
+>;
 
 const rowSchema = z.object({ record_json: z.string() });
 
@@ -92,6 +142,10 @@ export class SqliteRemediationStore {
         incident_id TEXT PRIMARY KEY,
         record_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS incident_runtime (
+        incident_id TEXT PRIMARY KEY REFERENCES incidents(incident_id),
+        mcp_authorization TEXT NOT NULL
+      );
     `);
   }
 
@@ -103,6 +157,7 @@ export class SqliteRemediationStore {
     incidentId: string,
     runId: string,
     evidenceBundleHash: string,
+    mcpAuthorization?: string,
   ): DurableIncidentRead {
     const incident = durableIncidentReadSchema.parse({
       baseline: {
@@ -111,6 +166,7 @@ export class SqliteRemediationStore {
         verdict: "VULNERABLE",
       },
       incidentId,
+      incidentStatus: "OPEN",
       remediation: { lifecycle: [], state: "INVESTIGATING" },
     });
     this.#database
@@ -118,7 +174,68 @@ export class SqliteRemediationStore {
         "INSERT OR IGNORE INTO incidents (incident_id, record_json) VALUES (?, ?)",
       )
       .run(incidentId, JSON.stringify(incident));
+    if (mcpAuthorization !== undefined) {
+      this.#database
+        .prepare(
+          `INSERT OR IGNORE INTO incident_runtime
+            (incident_id, mcp_authorization) VALUES (?, ?)`,
+        )
+        .run(incidentId, mcpAuthorization);
+    }
     return this.read(incidentId) ?? incident;
+  }
+
+  readMcpAuthorization(incidentId: string): string {
+    const row = this.#database
+      .prepare(
+        "SELECT mcp_authorization FROM incident_runtime WHERE incident_id = ?",
+      )
+      .get(incidentId);
+    const parsed = z
+      .object({ mcp_authorization: z.string().min(1) })
+      .safeParse(row);
+    if (!parsed.success) {
+      throw new Error(`Incident ${incidentId} has no persisted MCP authorization`);
+    }
+    return parsed.data.mcp_authorization;
+  }
+
+  denied(
+    incidentId: string,
+    decision: RemediationDecisionEvidence & { decision: "deny" },
+    policyReadback: z.infer<typeof policyReadSchema>,
+  ): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state === "DENIED") return current;
+    if (current.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error(`Incident ${incidentId} is not awaiting approval`);
+    }
+    return this.#update(current, {
+      decision,
+      dryRun: current.remediation.dryRun,
+      lifecycle: appendLifecycle(current, "DENIED"),
+      policyReadback,
+      state: "DENIED",
+    });
+  }
+
+  stale(
+    incidentId: string,
+    decision: RemediationDecisionEvidence & { decision: "allow" },
+    policyReadback: z.infer<typeof policyReadSchema>,
+  ): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state === "STALE") return current;
+    if (current.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error(`Incident ${incidentId} is not awaiting approval`);
+    }
+    return this.#update(current, {
+      decision,
+      dryRun: current.remediation.dryRun,
+      lifecycle: appendLifecycle(current, "STALE"),
+      policyReadback,
+      state: "STALE",
+    });
   }
 
   drafted(incidentId: string): DurableIncidentRead {

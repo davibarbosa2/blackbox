@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import type {
   EvidenceBundle,
@@ -9,6 +10,7 @@ import { classifyTrueForgeFailure } from "../failure.js";
 import type { CapabilityPolicy } from "../policy/capability-policy.js";
 import {
   type DurableIncidentRead,
+  type RemediationDecisionRequest,
   SqliteRemediationStore,
 } from "../remediation/store.js";
 import type {
@@ -19,6 +21,7 @@ import { createBaselineRunManifest } from "../scenario/definition.js";
 import {
   InvestigationExecutionError,
   investigationExecutionEvidenceSchema,
+  policyActionResolutionSchema,
 } from "../trueforge/runtime.js";
 import type {
   BaselineExecutionEvidence,
@@ -32,6 +35,10 @@ export type StartIncidentResult =
 export type BaselineRunRead =
   | { status: "running" }
   | { bundle: EvidenceBundle; status: "completed" };
+
+export type RemediationDecisionResult =
+  | { started: true }
+  | { started: false; state: "STALE" };
 
 export interface IncidentCoordinatorOptions {
   baseUrl: string;
@@ -64,6 +71,13 @@ export class IncidentCoordinator {
         controller: AbortController;
         mcpAuthorization: string;
         runId: string;
+      }
+    | undefined;
+  #activeDecision:
+    | {
+        completion: Promise<void>;
+        controller: AbortController;
+        incidentId: string;
       }
     | undefined;
 
@@ -135,6 +149,65 @@ export class IncidentCoordinator {
     return this.#remediations.read(incidentId);
   }
 
+  decide(
+    incidentId: string,
+    request: RemediationDecisionRequest,
+  ): RemediationDecisionResult {
+    const incident = this.#remediations.read(incidentId);
+    if (incident === undefined) {
+      throw new Error(`Incident ${incidentId} was not found`);
+    }
+    if (incident.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error(`Incident ${incidentId} is not awaiting approval`);
+    }
+    if (
+      !isDeepStrictEqual(
+        request.pendingDecision,
+        incident.remediation.pendingDecision,
+      )
+    ) {
+      throw new Error("Remediation decision does not match the pending action");
+    }
+    if (this.#activeDecision !== undefined) {
+      throw new Error("A Remediation decision is already running");
+    }
+
+    const decidedAt = new Date().toISOString();
+    const decisionEvidence = {
+      ...request.pendingDecision,
+      decidedAt,
+      decision: request.decision,
+    };
+    if (
+      request.decision === "allow" &&
+      (this.#policy.fingerprint() !== incident.remediation.dryRun.base.hash ||
+        this.#policy.read().version !==
+          incident.remediation.dryRun.base.version)
+    ) {
+      this.#remediations.stale(
+        incidentId,
+        { ...decisionEvidence, decision: "allow" },
+        this.#policy.read(),
+      );
+      return { started: false, state: "STALE" };
+    }
+
+    const controller = new AbortController();
+    const completion = this.#resolveDecision(
+      incidentId,
+      request,
+      decidedAt,
+      controller.signal,
+    ).finally(() => {
+      if (this.#activeDecision?.incidentId === incidentId) {
+        this.#activeDecision = undefined;
+      }
+    });
+    this.#activeDecision = { completion, controller, incidentId };
+    void completion.catch(() => undefined);
+    return { started: true };
+  }
+
   isMcpAuthorized(authorization: string | undefined): boolean {
     const capability = this.#active?.mcpAuthorization;
     if (capability === undefined || authorization === undefined) return false;
@@ -147,9 +220,72 @@ export class IncidentCoordinator {
 
   async shutdown(): Promise<void> {
     const active = this.#active;
-    if (active === undefined) return;
-    active.controller.abort(new Error("BLACKBOX is shutting down"));
-    await active.completion;
+    const activeDecision = this.#activeDecision;
+    active?.controller.abort(new Error("BLACKBOX is shutting down"));
+    activeDecision?.controller.abort(new Error("BLACKBOX is shutting down"));
+    await Promise.all([active?.completion, activeDecision?.completion]);
+  }
+
+  async #resolveDecision(
+    incidentId: string,
+    request: RemediationDecisionRequest,
+    decidedAt: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const resolvePolicyAction = this.#runtime.resolvePolicyAction;
+    if (resolvePolicyAction === undefined) {
+      this.#remediations.validationFailed(
+        incidentId,
+        "TrueForge policy-action runtime is unavailable",
+        request.pendingDecision,
+      );
+      return;
+    }
+    try {
+      const resolution = policyActionResolutionSchema.parse(
+        await resolvePolicyAction({
+          decision: request.decision,
+          mcpAuthorization:
+            this.#remediations.readMcpAuthorization(incidentId),
+          pendingDecision: request.pendingDecision,
+          signal,
+        }),
+      );
+      if (
+        resolution.decision !== request.decision ||
+        !isDeepStrictEqual(
+          resolution.pendingDecision,
+          request.pendingDecision,
+        )
+      ) {
+        throw new Error("TrueForge resumed a different pending action");
+      }
+      if (request.decision === "deny") {
+        this.#remediations.denied(
+          incidentId,
+          {
+            ...request.pendingDecision,
+            decidedAt,
+            decision: "deny",
+          },
+          this.#policy.read(),
+        );
+        return;
+      }
+      this.#remediations.validationFailed(
+        incidentId,
+        "Remediation verification is not yet available",
+        request.pendingDecision,
+      );
+    } catch (error) {
+      this.#remediations.validationFailed(
+        incidentId,
+        error instanceof Error
+          ? error.message
+          : "TrueForge policy-action resolution failed",
+        request.pendingDecision,
+      );
+    }
   }
 
   async #execute(
@@ -224,6 +360,7 @@ export class IncidentCoordinator {
       incidentId,
       bundle.manifest.runId,
       bundle.bundleHash,
+      mcpAuthorization,
     );
     const executeInvestigation = this.#runtime.executeInvestigation;
     if (executeInvestigation === undefined) {
@@ -272,6 +409,7 @@ export class IncidentCoordinator {
       actionId: evidence.pendingAction.actionId,
       callId: evidence.pendingAction.callId,
       sessionId: evidence.pendingAction.sessionId,
+      threadId: evidence.pendingAction.threadId,
       toolName: evidence.pendingAction.toolName,
       turnId: evidence.pendingAction.turnId,
     };

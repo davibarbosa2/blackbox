@@ -249,6 +249,7 @@ describe("TrueForge Incident investigation", () => {
         callId: "call-apply-1",
         proposal: PROPOSAL,
         sessionId: "session-investigation-1",
+        threadId: "main",
         toolName: "apply_policy_patch",
         turnId: "turn-investigation-1",
       },

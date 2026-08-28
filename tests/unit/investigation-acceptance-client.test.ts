@@ -42,6 +42,7 @@ const PENDING_INCIDENT = {
     verdict: "VULNERABLE",
   },
   incidentId: BUNDLE.manifest.incidentId,
+  incidentStatus: "OPEN",
   remediation: {
     analysis: {
       artifact: {
@@ -92,6 +93,7 @@ const PENDING_INCIDENT = {
       actionId: "action-1",
       callId: "call-1",
       sessionId: "session-1",
+      threadId: "main",
       toolName: "apply_policy_patch",
       turnId: "turn-1",
     },

@@ -17,8 +17,14 @@ import {
 } from "../incident/coordinator.js";
 import { createInvestigatorMcpHandler } from "../investigation/http.js";
 import type { BlackboxObservability } from "../observability/evlog.js";
-import { createBaselineCapabilityPolicy } from "../policy/capability-policy.js";
-import { SqliteRemediationStore } from "../remediation/store.js";
+import {
+  type CapabilityPolicy,
+  createSqliteCapabilityPolicy,
+} from "../policy/capability-policy.js";
+import {
+  remediationDecisionRequestSchema,
+  SqliteRemediationStore,
+} from "../remediation/store.js";
 import {
   createScenarioMcpHandler,
   registerExternalSinkRoute,
@@ -82,6 +88,7 @@ interface IncidentApplication {
   investigatorMcp: ReturnType<typeof createInvestigatorMcpHandler>;
   ledger: SqliteEvidenceLedger;
   mcp: ReturnType<typeof createScenarioMcpHandler>;
+  policy: CapabilityPolicy;
   remediations: SqliteRemediationStore;
   shutdown(): Promise<void>;
 }
@@ -95,7 +102,9 @@ function createIncidentApplication(
   const ledger = new SqliteEvidenceLedger(databasePath);
   const remediations = new SqliteRemediationStore(databasePath);
   const trustedDestination = `${incidentOptions.baseUrl}/api/trusted-destination`;
-  const policy = createBaselineCapabilityPolicy([trustedDestination]);
+  const policy = createSqliteCapabilityPolicy(databasePath, [
+    trustedDestination,
+  ]);
   const service = new ScenarioService(
     ledger,
     policy,
@@ -125,6 +134,7 @@ function createIncidentApplication(
     investigatorMcp,
     ledger,
     mcp,
+    policy,
     remediations,
     async shutdown(): Promise<void> {
       await coordinator.shutdown();
@@ -134,7 +144,11 @@ function createIncidentApplication(
         try {
           ledger.close();
         } finally {
-          remediations.close();
+          try {
+            remediations.close();
+          } finally {
+            policy.close();
+          }
         }
       }
     },
@@ -237,6 +251,36 @@ function buildApp(
         return context.json({ error: "Incident not found" }, 404);
       }
       return context.json(result);
+    });
+    app.post("/api/incidents/:incidentId/remediation-decisions", async (context) => {
+      const incidentId = context.req.param("incidentId");
+      if (!UUID_V4.test(incidentId)) {
+        return context.json({ error: "Invalid Incident id" }, 400);
+      }
+      let request: unknown;
+      try {
+        request = await context.req.json();
+      } catch {
+        return context.json({ error: "Invalid Remediation decision" }, 400);
+      }
+      try {
+        const result = incident.coordinator.decide(
+          incidentId,
+          remediationDecisionRequestSchema.parse(request),
+        );
+        return context.json(
+          {
+            incidentId,
+            status: result.started ? "running" : result.state,
+          },
+          result.started ? 202 : 200,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Remediation decision failed";
+        const status = message.endsWith("was not found") ? 404 : 409;
+        return context.json({ error: message }, status);
+      }
     });
   }
 

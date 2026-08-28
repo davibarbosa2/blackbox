@@ -9,6 +9,7 @@ import { configureTrueForge } from "./configure.js";
 import { executeTrueForgeBaseline } from "./execute-baseline.js";
 import { executeTrueForgeInvestigation } from "./execute-investigation.js";
 import { executeTrueForgeSmoke } from "./execute-smoke.js";
+import { executeTrueForgePolicyAction } from "./resolve-policy-action.js";
 import {
   InvestigationExecutionError,
   RuntimeSmokeStageError,
@@ -77,6 +78,29 @@ export function createSdkTrueForgeRuntime(
           );
         }
         throw new Error(redacted);
+      }
+    },
+    async resolvePolicyAction(request) {
+      try {
+        await readHealth(config.trueForge.baseUrl, fetcher, request.signal);
+        await configureInvestigatorAgent(
+          client,
+          config,
+          request.mcpAuthorization,
+          request.signal,
+        );
+        return await executeTrueForgePolicyAction(
+          client,
+          request.pendingDecision,
+          request.decision,
+          request.signal,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Policy action resolution failed";
+        throw new Error(redactSecrets(message, secrets));
       }
     },
     async executeSmoke(options): Promise<RuntimeSmokeEvidence> {
