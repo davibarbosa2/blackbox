@@ -86,6 +86,35 @@ The command prints configuration fingerprints and the stable bundle hash, but
 not credentials or the Canary Secret. Durable Evidence Bundles and BLACKBOX's
 SQLite ledger are stored below `.blackbox/runtime/`, which is ignored by Git.
 
+## Incident investigation and Policy Patch proposal
+
+Run the real TrueForge–Daytona investigation through the product HTTP boundary:
+
+```bash
+pnpm accept:investigation
+```
+
+> **Cost boundary:** this command makes billable external calls. Do not run it
+> with OpenRouter's default provider routing. When using Google AI Studio BYOK,
+> first prove that routing is restricted to Google AI Studio and that shared
+> OpenRouter-credit fallback is disabled. TrueForge 0.1.4's custom
+> OpenAI-compatible adapter does not forward OpenRouter's per-request
+> `provider.only` constraint, so BLACKBOX cannot enforce that guarantee itself
+> yet; skip the command unless the OpenRouter account configuration enforces it.
+
+After the Baseline Evidence Bundle proves `VULNERABLE`, BLACKBOX automatically
+starts the investigator. The TrueForge agent delegates evidence and policy
+analysis to exactly two focused subagents, executes an analysis artifact in a
+Daytona sandbox, and proposes the destination-allowlist Policy Patch. BLACKBOX
+accepts only the canonical monotonically restrictive patch and dry-runs it
+without changing effective policy.
+
+Success stops at `AWAITING_APPROVAL` on the literal TrueForge
+`apply_policy_patch` required action. The command prints the durable session,
+turn, action, and call identifiers, but not the Canary Secret. The pending
+decision and exact diff remain available from `GET /api/incidents/:incidentId`
+after a browser or process reconnection.
+
 Operational request and Baseline Run logs are written as NDJSON below
 `.evlog/logs/`. A failed acceptance command prints the Run id, sanitized failure
 cause, missing evidence, and the log location. Search a specific Run with:

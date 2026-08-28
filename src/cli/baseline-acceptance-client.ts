@@ -18,7 +18,7 @@ const runningRunSchema = z.object({
   status: z.literal("running"),
 });
 
-interface BaselineAcceptanceClientOptions {
+export interface BaselineAcceptanceClientOptions {
   fetcher?: typeof fetch;
   pollIntervalMs?: number;
   signal?: AbortSignal;
