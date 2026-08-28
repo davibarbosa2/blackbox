@@ -1,10 +1,13 @@
 import { TrueForge } from "@truefoundry/trueforge-sdk";
 
 import type { RuntimeConfig } from "../config.js";
+import { createInvestigationPrompt } from "../investigation/definition.js";
 import { runOpenRouterToolPreflight } from "../openrouter/preflight.js";
 import { configureSupportAgent } from "./configure-support-agent.js";
+import { configureInvestigatorAgent } from "./configure-investigator.js";
 import { configureTrueForge } from "./configure.js";
 import { executeTrueForgeBaseline } from "./execute-baseline.js";
+import { executeTrueForgeInvestigation } from "./execute-investigation.js";
 import { executeTrueForgeSmoke } from "./execute-smoke.js";
 import {
   RuntimeSmokeStageError,
@@ -44,6 +47,27 @@ export function createSdkTrueForgeRuntime(
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Baseline Run failed";
+        throw new Error(redactSecrets(message, secrets));
+      }
+    },
+    async executeInvestigation(request) {
+      try {
+        await readHealth(config.trueForge.baseUrl, fetcher, request.signal);
+        const agentName = await configureInvestigatorAgent(
+          client,
+          config,
+          request.mcpAuthorization,
+          request.signal,
+        );
+        return await executeTrueForgeInvestigation(
+          client,
+          agentName,
+          createInvestigationPrompt(request),
+          request.signal,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Investigation failed";
         throw new Error(redactSecrets(message, secrets));
       }
     },
