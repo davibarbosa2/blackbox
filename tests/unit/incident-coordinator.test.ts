@@ -12,6 +12,7 @@ import { IncidentCoordinator } from "../../src/incident/coordinator.js";
 import type { BaselineRunObservation } from "../../src/observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../../src/policy/capability-policy.js";
 import { SqliteRemediationStore } from "../../src/remediation/store.js";
+import { InvestigationExecutionError } from "../../src/trueforge/runtime.js";
 import type { TrueForgeRuntime } from "../../src/trueforge/runtime.js";
 import type {
   InvestigationExecutionEvidence,
@@ -35,17 +36,17 @@ describe("Incident coordinator observability", () => {
       finalizationFailed: vi.fn(),
     };
     const remediations = new SqliteRemediationStore(":memory:");
-    const coordinator = new IncidentCoordinator(
-      runtime,
-      harness.ledger,
-      createBaselineCapabilityPolicy(),
-      "glm-5.3-flash",
-      "z-ai/glm-5.3-flash",
-      "http://127.0.0.1:3000",
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "glm-5.3-flash", id: "z-ai/glm-5.3-flash" },
+      observeBaselineRun: () => observation,
+      policy: createBaselineCapabilityPolicy(),
       remediations,
-      "http://127.0.0.1:3000/api/trusted-destination",
-      () => observation,
-    );
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
 
     coordinator.start();
 
@@ -103,17 +104,17 @@ describe("Incident coordinator observability", () => {
       finalizationFailed: vi.fn(),
     };
     const remediations = new SqliteRemediationStore(":memory:");
-    const coordinator = new IncidentCoordinator(
-      runtime,
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
       ledger,
-      createBaselineCapabilityPolicy(),
-      "glm-5.2",
-      "z-ai/glm-5.2:free",
-      "http://127.0.0.1:3000",
+      model: { alias: "glm-5.2", id: "z-ai/glm-5.2:free" },
+      observeBaselineRun: () => observation,
+      policy: createBaselineCapabilityPolicy(),
       remediations,
-      "http://127.0.0.1:3000/api/trusted-destination",
-      () => observation,
-    );
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
 
     coordinator.start();
 
@@ -140,7 +141,7 @@ describe("Incident coordinator observability", () => {
     remediations.close();
   });
 
-  it("retries and withholds approval for a non-canonical proposal", async () => {
+  it("does not retry after observing a non-canonical pending action", async () => {
     const harness = createFinalizingHarness("VULNERABLE");
     const executeInvestigation = vi.fn(
       async (
@@ -160,16 +161,15 @@ describe("Incident coordinator observability", () => {
       "http://127.0.0.1:3000/api/trusted-destination";
     const policy = createBaselineCapabilityPolicy([trustedDestination]);
     const remediations = new SqliteRemediationStore(":memory:");
-    const coordinator = new IncidentCoordinator(
-      runtime,
-      harness.ledger,
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
       policy,
-      "tool-model",
-      "vendor/tool-model",
-      "http://127.0.0.1:3000",
       remediations,
+      runtime,
       trustedDestination,
-    );
+    });
 
     const started = coordinator.start();
     if (!started.started) throw new Error("Incident did not start");
@@ -179,15 +179,57 @@ describe("Incident coordinator observability", () => {
       });
     });
 
-    expect(executeInvestigation).toHaveBeenCalledTimes(2);
-    expect(
-      remediations
-        .read(started.incidentId)
-        ?.remediation.lifecycle.map((event) => event.state),
-    ).toEqual(["DRAFTED"]);
+    expect(executeInvestigation).toHaveBeenCalledOnce();
+    expect(remediations.read(started.incidentId)?.remediation).toMatchObject({
+      lifecycle: [{ state: "DRAFTED" }],
+      pendingDecision: {
+        actionId: "action-1",
+        callId: "call-apply",
+        sessionId: "session-investigation",
+        turnId: "turn-investigation",
+      },
+      state: "VALIDATION_FAILED",
+    });
     expect(policy.fingerprint()).toBe(
       "93d054afcb184730a08510550d5ed932dcf78ae88011a76b16423f615df0210c",
     );
+    remediations.close();
+  });
+
+  it("does not retry a transient failure after TrueForge observed an action", async () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const executeInvestigation = vi.fn().mockRejectedValue(
+      new InvestigationExecutionError(
+        "Request failed (503) after pending action",
+        true,
+      ),
+    );
+    const runtime: TrueForgeRuntime = {
+      executeBaseline: async ({ runId }) => baselineEvidence(runId),
+      executeInvestigation,
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy(),
+      remediations,
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    await vi.waitFor(() => {
+      expect(remediations.read(started.incidentId)).toMatchObject({
+        remediation: { state: "VALIDATION_FAILED" },
+      });
+    });
+
+    expect(executeInvestigation).toHaveBeenCalledOnce();
     remediations.close();
   });
 
@@ -200,16 +242,16 @@ describe("Incident coordinator observability", () => {
       executeSmoke: () => new Promise(() => undefined),
     };
     const remediations = new SqliteRemediationStore(":memory:");
-    const coordinator = new IncidentCoordinator(
-      runtime,
-      harness.ledger,
-      createBaselineCapabilityPolicy(),
-      "tool-model",
-      "vendor/tool-model",
-      "http://127.0.0.1:3000",
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy(),
       remediations,
-      "http://127.0.0.1:3000/api/trusted-destination",
-    );
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
 
     const started = coordinator.start();
     if (!started.started) throw new Error("Incident did not start");

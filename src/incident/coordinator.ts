@@ -16,7 +16,10 @@ import type {
   BaselineRunObservationContext,
 } from "../observability/evlog.js";
 import { createBaselineRunManifest } from "../scenario/definition.js";
-import { investigationExecutionEvidenceSchema } from "../trueforge/runtime.js";
+import {
+  InvestigationExecutionError,
+  investigationExecutionEvidenceSchema,
+} from "../trueforge/runtime.js";
 import type {
   BaselineExecutionEvidence,
   TrueForgeRuntime,
@@ -29,6 +32,19 @@ export type StartIncidentResult =
 export type BaselineRunRead =
   | { status: "running" }
   | { bundle: EvidenceBundle; status: "completed" };
+
+export interface IncidentCoordinatorOptions {
+  baseUrl: string;
+  ledger: EvidenceLedger;
+  model: { alias: string; id: string };
+  observeBaselineRun?: (
+    context: BaselineRunObservationContext,
+  ) => BaselineRunObservation;
+  policy: CapabilityPolicy;
+  remediations: SqliteRemediationStore;
+  runtime: TrueForgeRuntime;
+  trustedDestination: string;
+}
 
 export class IncidentCoordinator {
   readonly #ledger: EvidenceLedger;
@@ -51,28 +67,16 @@ export class IncidentCoordinator {
       }
     | undefined;
 
-  constructor(
-    runtime: TrueForgeRuntime,
-    ledger: EvidenceLedger,
-    policy: CapabilityPolicy,
-    modelAlias: string,
-    modelId: string,
-    baseUrl: string,
-    remediations: SqliteRemediationStore,
-    trustedDestination: string,
-    observeBaselineRun?: (
-      context: BaselineRunObservationContext,
-    ) => BaselineRunObservation,
-  ) {
-    this.#runtime = runtime;
-    this.#ledger = ledger;
-    this.#policy = policy;
-    this.#modelAlias = modelAlias;
-    this.#modelId = modelId;
-    this.#baseUrl = baseUrl;
-    this.#remediations = remediations;
-    this.#trustedDestination = trustedDestination;
-    this.#observeBaselineRun = observeBaselineRun;
+  constructor(options: IncidentCoordinatorOptions) {
+    this.#runtime = options.runtime;
+    this.#ledger = options.ledger;
+    this.#policy = options.policy;
+    this.#modelAlias = options.model.alias;
+    this.#modelId = options.model.id;
+    this.#baseUrl = options.baseUrl;
+    this.#remediations = options.remediations;
+    this.#trustedDestination = options.trustedDestination;
+    this.#observeBaselineRun = options.observeBaselineRun;
   }
 
   start(): StartIncidentResult {
@@ -230,11 +234,14 @@ export class IncidentCoordinator {
       return;
     }
 
-    let lastError: unknown;
+    const policy = this.#policy.read();
+    let evidence:
+      | ReturnType<typeof investigationExecutionEvidenceSchema.parse>
+      | undefined;
+    let executionError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const policy = this.#policy.read();
-        const evidence = investigationExecutionEvidenceSchema.parse(
+        evidence = investigationExecutionEvidenceSchema.parse(
           await executeInvestigation({
             bundle,
             mcpAuthorization,
@@ -243,41 +250,59 @@ export class IncidentCoordinator {
             trustedDestination: this.#trustedDestination,
           }),
         );
-        validateInvestigationEvidence(
-          evidence,
-          bundle,
-          policy,
-          this.#trustedDestination,
-        );
-        this.#remediations.drafted(incidentId);
-        const dryRun = this.#policy.dryRunPatch(
-          evidence.pendingAction.proposal.patch,
-        );
-        this.#remediations.dryRunPassed(incidentId, dryRun);
-        this.#remediations.awaitingApproval(incidentId, {
-          analysis: evidence.analysis,
-          diagnosis: evidence.diagnosis,
-          dryRun,
-          evidenceJustification:
-            evidence.pendingAction.proposal.evidenceJustification,
-          pendingDecision: {
-            actionId: evidence.pendingAction.actionId,
-            callId: evidence.pendingAction.callId,
-            sessionId: evidence.pendingAction.sessionId,
-            toolName: evidence.pendingAction.toolName,
-            turnId: evidence.pendingAction.turnId,
-          },
-          subagents: evidence.subagents,
-        });
-        return;
+        break;
       } catch (error) {
-        lastError = error;
+        const failure =
+          error instanceof Error ? error : new Error("Investigation failed");
+        executionError = failure;
+        if (!isRetryableInvestigationFailure(failure, signal)) break;
       }
     }
-    this.#remediations.validationFailed(
-      incidentId,
-      lastError instanceof Error ? lastError.message : "Investigation failed",
-    );
+    if (evidence === undefined) {
+      this.#remediations.validationFailed(
+        incidentId,
+        executionError instanceof Error
+          ? executionError.message
+          : "Investigation failed",
+      );
+      return;
+    }
+
+    const pendingDecision = {
+      actionId: evidence.pendingAction.actionId,
+      callId: evidence.pendingAction.callId,
+      sessionId: evidence.pendingAction.sessionId,
+      toolName: evidence.pendingAction.toolName,
+      turnId: evidence.pendingAction.turnId,
+    };
+    try {
+      validateInvestigationEvidence(
+        evidence,
+        bundle,
+        policy,
+        this.#trustedDestination,
+      );
+      this.#remediations.drafted(incidentId);
+      const dryRun = this.#policy.dryRunPatch(
+        evidence.pendingAction.proposal.patch,
+      );
+      this.#remediations.dryRunPassed(incidentId, dryRun);
+      this.#remediations.awaitingApproval(incidentId, {
+        analysis: evidence.analysis,
+        diagnosis: evidence.diagnosis,
+        dryRun,
+        evidenceJustification:
+          evidence.pendingAction.proposal.evidenceJustification,
+        pendingDecision,
+        subagents: evidence.subagents,
+      });
+    } catch (error) {
+      this.#remediations.validationFailed(
+        incidentId,
+        error instanceof Error ? error.message : "Investigation failed",
+        pendingDecision,
+      );
+    }
   }
 
   #startObservation(
@@ -334,6 +359,20 @@ function validateInvestigationEvidence(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function isRetryableInvestigationFailure(
+  error: Error,
+  signal: AbortSignal,
+): boolean {
+  if (signal.aborted) return false;
+  if (
+    error instanceof InvestigationExecutionError &&
+    error.pendingActionObserved
+  ) {
+    return false;
+  }
+  return classifyTrueForgeFailure(error.message).failure.retryable;
 }
 
 function baselineEvidenceRecords(

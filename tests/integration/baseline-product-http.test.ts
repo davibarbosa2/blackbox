@@ -175,7 +175,7 @@ describe("Baseline Run product HTTP API", () => {
       }),
     );
     executeInvestigation.mockRejectedValueOnce(
-      new Error("transient TrueForge disconnect"),
+      new Error("Request failed (503): transient TrueForge disconnect"),
     );
     const application = createBlackboxApplication({
       incident: {

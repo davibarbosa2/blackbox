@@ -11,7 +11,10 @@ import type { EvlogVariables } from "evlog/hono";
 import { Hono } from "hono";
 
 import { SqliteEvidenceLedger } from "../evidence/ledger.js";
-import { IncidentCoordinator } from "../incident/coordinator.js";
+import {
+  IncidentCoordinator,
+  type IncidentCoordinatorOptions,
+} from "../incident/coordinator.js";
 import { createInvestigatorMcpHandler } from "../investigation/http.js";
 import type { BlackboxObservability } from "../observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../policy/capability-policy.js";
@@ -100,17 +103,23 @@ function createIncidentApplication(
   );
   const mcp = createScenarioMcpHandler(service);
   const investigatorMcp = createInvestigatorMcpHandler();
-  const coordinator = new IncidentCoordinator(
-    options.trueForgeRuntime,
+  const coordinatorOptions: IncidentCoordinatorOptions = {
+    baseUrl: incidentOptions.baseUrl,
     ledger,
+    model: {
+      alias: incidentOptions.modelAlias,
+      id: incidentOptions.modelId,
+    },
     policy,
-    incidentOptions.modelAlias,
-    incidentOptions.modelId,
-    incidentOptions.baseUrl,
     remediations,
+    runtime: options.trueForgeRuntime,
     trustedDestination,
-    options.observability?.observeBaselineRun,
-  );
+  };
+  if (options.observability !== undefined) {
+    coordinatorOptions.observeBaselineRun =
+      options.observability.observeBaselineRun;
+  }
+  const coordinator = new IncidentCoordinator(coordinatorOptions);
   return {
     coordinator,
     investigatorMcp,

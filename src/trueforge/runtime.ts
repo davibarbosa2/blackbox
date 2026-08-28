@@ -251,6 +251,16 @@ export class RuntimeSmokeStageError extends Error {
   }
 }
 
+export class InvestigationExecutionError extends Error {
+  readonly pendingActionObserved: boolean;
+
+  constructor(message: string, pendingActionObserved: boolean) {
+    super(message);
+    this.name = "InvestigationExecutionError";
+    this.pendingActionObserved = pendingActionObserved;
+  }
+}
+
 export interface TrueForgeRuntime {
   executeBaseline(
     request: BaselineExecutionRequest,

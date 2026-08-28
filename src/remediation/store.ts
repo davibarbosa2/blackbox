@@ -22,6 +22,9 @@ const lifecycleEventSchema = z.object({
   state: z.enum(["DRAFTED", "DRY_RUN_PASSED", "AWAITING_APPROVAL"]),
 });
 const lifecycleSchema = z.array(lifecycleEventSchema);
+const pendingPolicyDecisionSchema = pendingPolicyActionSchema.omit({
+  proposal: true,
+});
 
 const investigatingSchema = z.object({
   lifecycle: lifecycleSchema,
@@ -40,8 +43,10 @@ const dryRunPassedSchema = z.object({
 });
 
 const validationFailedSchema = z.object({
+  dryRun: policyPatchDryRunSchema.optional(),
   error: z.string(),
   lifecycle: lifecycleSchema,
+  pendingDecision: pendingPolicyDecisionSchema.optional(),
   state: z.literal("VALIDATION_FAILED"),
 });
 
@@ -51,9 +56,7 @@ const awaitingApprovalSchema = z.object({
   dryRun: policyPatchDryRunSchema,
   evidenceJustification: evidenceJustificationSchema,
   lifecycle: lifecycleSchema,
-  pendingDecision: pendingPolicyActionSchema.omit({
-    proposal: true,
-  }),
+  pendingDecision: pendingPolicyDecisionSchema,
   state: z.literal("AWAITING_APPROVAL"),
   subagents: z.tuple([subagentEvidenceSchema, subagentEvidenceSchema]),
 });
@@ -74,6 +77,7 @@ export type DurableIncidentRead = z.infer<typeof durableIncidentReadSchema>;
 export type AwaitingApprovalRemediation = z.infer<
   typeof awaitingApprovalSchema
 >;
+export type PendingPolicyDecision = z.infer<typeof pendingPolicyDecisionSchema>;
 
 const rowSchema = z.object({ record_json: z.string() });
 
@@ -159,13 +163,27 @@ export class SqliteRemediationStore {
     });
   }
 
-  validationFailed(incidentId: string, error: string): DurableIncidentRead {
+  validationFailed(
+    incidentId: string,
+    error: string,
+    pendingDecision?: PendingPolicyDecision,
+  ): DurableIncidentRead {
     const current = this.#readRequired(incidentId);
-    return this.#update(current, {
+    const dryRun =
+      current.remediation.state === "DRY_RUN_PASSED" ||
+      current.remediation.state === "AWAITING_APPROVAL"
+        ? current.remediation.dryRun
+        : undefined;
+    const failure: z.infer<typeof validationFailedSchema> = {
       error,
       lifecycle: current.remediation.lifecycle,
       state: "VALIDATION_FAILED",
-    });
+    };
+    if (dryRun !== undefined) failure.dryRun = dryRun;
+    if (pendingDecision !== undefined) {
+      failure.pendingDecision = pendingDecision;
+    }
+    return this.#update(current, failure);
   }
 
   read(incidentId: string): DurableIncidentRead | undefined {

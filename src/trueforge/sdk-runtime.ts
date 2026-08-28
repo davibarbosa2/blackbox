@@ -10,6 +10,7 @@ import { executeTrueForgeBaseline } from "./execute-baseline.js";
 import { executeTrueForgeInvestigation } from "./execute-investigation.js";
 import { executeTrueForgeSmoke } from "./execute-smoke.js";
 import {
+  InvestigationExecutionError,
   RuntimeSmokeStageError,
   type RuntimeSmokeEvidence,
   type RuntimeSmokeFailureStage,
@@ -68,7 +69,14 @@ export function createSdkTrueForgeRuntime(
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Investigation failed";
-        throw new Error(redactSecrets(message, secrets));
+        const redacted = redactSecrets(message, secrets);
+        if (error instanceof InvestigationExecutionError) {
+          throw new InvestigationExecutionError(
+            redacted,
+            error.pendingActionObserved,
+          );
+        }
+        throw new Error(redacted);
       }
     },
     async executeSmoke(options): Promise<RuntimeSmokeEvidence> {

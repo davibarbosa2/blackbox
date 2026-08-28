@@ -11,6 +11,7 @@ import {
   evidenceProvenanceSubagentSchema,
   evidenceProvenanceSubagentOutputSchema,
   investigationAnalysisResultSchema,
+  InvestigationExecutionError,
   investigationExecutionEvidenceSchema,
   investigationProposalSchema,
   type InvestigationExecutionEvidence,
@@ -36,6 +37,23 @@ export async function executeTrueForgeInvestigation(
   client: TrueForge,
   agentName: string,
   prompt: string,
+  signal?: AbortSignal,
+): Promise<InvestigationExecutionEvidence> {
+  const state = { pendingActionObserved: false };
+  try {
+    return await executeInvestigation(client, agentName, prompt, state, signal);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "TrueForge investigation failed";
+    throw new InvestigationExecutionError(message, state.pendingActionObserved);
+  }
+}
+
+async function executeInvestigation(
+  client: TrueForge,
+  agentName: string,
+  prompt: string,
+  state: { pendingActionObserved: boolean },
   signal?: AbortSignal,
 ): Promise<InvestigationExecutionEvidence> {
   const session = await client.sessions.create(
@@ -69,6 +87,7 @@ export async function executeTrueForgeInvestigation(
     throw new Error("TrueForge investigation did not reach a terminal done turn");
   }
   const liveAction = onlyApprovalAction(turnDone.state.requiredActions);
+  state.pendingActionObserved = true;
 
   const turn = await client.sessions.getTurn(
     session.data.id,
