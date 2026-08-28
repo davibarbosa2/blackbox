@@ -12,8 +12,10 @@ import { Hono } from "hono";
 
 import { SqliteEvidenceLedger } from "../evidence/ledger.js";
 import { IncidentCoordinator } from "../incident/coordinator.js";
+import { createInvestigatorMcpHandler } from "../investigation/http.js";
 import type { BlackboxObservability } from "../observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../policy/capability-policy.js";
+import { SqliteRemediationStore } from "../remediation/store.js";
 import {
   createScenarioMcpHandler,
   registerExternalSinkRoute,
@@ -74,8 +76,10 @@ export function createBlackboxApplication(
 
 interface IncidentApplication {
   coordinator: IncidentCoordinator;
+  investigatorMcp: ReturnType<typeof createInvestigatorMcpHandler>;
   ledger: SqliteEvidenceLedger;
   mcp: ReturnType<typeof createScenarioMcpHandler>;
+  remediations: SqliteRemediationStore;
   shutdown(): Promise<void>;
 }
 
@@ -84,16 +88,18 @@ function createIncidentApplication(
   incidentOptions: NonNullable<BlackboxAppOptions["incident"]>,
 ): IncidentApplication {
   mkdirSync(options.runtimeDirectory, { mode: 0o700, recursive: true });
-  const ledger = new SqliteEvidenceLedger(
-    join(options.runtimeDirectory, "blackbox.sqlite"),
-  );
-  const policy = createBaselineCapabilityPolicy();
+  const databasePath = join(options.runtimeDirectory, "blackbox.sqlite");
+  const ledger = new SqliteEvidenceLedger(databasePath);
+  const remediations = new SqliteRemediationStore(databasePath);
+  const trustedDestination = `${incidentOptions.baseUrl}/api/trusted-destination`;
+  const policy = createBaselineCapabilityPolicy([trustedDestination]);
   const service = new ScenarioService(
     ledger,
     policy,
     incidentOptions.baseUrl,
   );
   const mcp = createScenarioMcpHandler(service);
+  const investigatorMcp = createInvestigatorMcpHandler();
   const coordinator = new IncidentCoordinator(
     options.trueForgeRuntime,
     ledger,
@@ -101,18 +107,26 @@ function createIncidentApplication(
     incidentOptions.modelAlias,
     incidentOptions.modelId,
     incidentOptions.baseUrl,
+    remediations,
+    trustedDestination,
     options.observability?.observeBaselineRun,
   );
   return {
     coordinator,
+    investigatorMcp,
     ledger,
     mcp,
+    remediations,
     async shutdown(): Promise<void> {
       await coordinator.shutdown();
       try {
-        await mcp.close();
+        await Promise.all([mcp.close(), investigatorMcp.close()]);
       } finally {
-        ledger.close();
+        try {
+          ledger.close();
+        } finally {
+          remediations.close();
+        }
       }
     },
   };
@@ -146,6 +160,21 @@ function buildApp(
         return context.json({ error: "Unauthorized" }, 401);
       }
       return incident.mcp.fetch(request);
+    });
+    app.all("/investigator-mcp", (context) => {
+      const request = context.req.raw;
+      const rejected =
+        hostHeaderValidationResponse(request, localhostAllowedHostnames()) ??
+        originValidationResponse(request, localhostAllowedOrigins());
+      if (rejected !== undefined) return rejected;
+      if (
+        !incident.coordinator.isMcpAuthorized(
+          request.headers.get("authorization") ?? undefined,
+        )
+      ) {
+        return context.json({ error: "Unauthorized" }, 401);
+      }
+      return incident.investigatorMcp.fetch(request);
     });
     registerExternalSinkRoute(app, incident.ledger);
     app.post("/api/incidents", (context) => {
@@ -188,6 +217,17 @@ function buildApp(
         return context.json({ runId, status: "running" }, 202);
       }
       return context.json(result.bundle);
+    });
+    app.get("/api/incidents/:incidentId", (context) => {
+      const incidentId = context.req.param("incidentId");
+      if (!UUID_V4.test(incidentId)) {
+        return context.json({ error: "Invalid Incident id" }, 400);
+      }
+      const result = incident.coordinator.readIncident(incidentId);
+      if (result === undefined) {
+        return context.json({ error: "Incident not found" }, 404);
+      }
+      return context.json(result);
     });
   }
 

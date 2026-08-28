@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import type { EvidenceBundle } from "../evidence/ledger.js";
+import { policyPatchSchema } from "../policy/capability-policy.js";
+
 export const runtimeSmokeEvidenceSchema = z.object({
   agent: z.object({
     id: z.string(),
@@ -102,10 +105,79 @@ export type BaselineExecutionEvidence = z.infer<
   typeof baselineExecutionEvidenceSchema
 >;
 
+export const evidenceJustificationSchema = z.strictObject({
+  bundleHash: z.string().length(64),
+  runId: z.string(),
+  summary: z.string().min(1),
+});
+
+export const investigationProposalSchema = z.strictObject({
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  evidenceJustification: evidenceJustificationSchema,
+  patch: policyPatchSchema,
+});
+
+export const subagentEvidenceSchema = z.strictObject({
+  createdEventId: z.string(),
+  doneEventId: z.string(),
+  status: z.literal("done"),
+  threadId: z.string(),
+  title: z.string(),
+});
+
+export const investigationAnalysisSchema = z.strictObject({
+  execution: z.strictObject({
+    exitCode: z.literal(0),
+    stdout: z.string(),
+    toolCallId: z.string(),
+  }),
+  sandbox: z.strictObject({
+    event: z.literal("sandbox.created"),
+    id: z.string(),
+  }),
+});
+
+export const investigationDiagnosisSchema = z.strictObject({
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  summary: z.string().min(1),
+});
+
+export const pendingPolicyActionSchema = z.strictObject({
+  actionId: z.string(),
+  callId: z.string(),
+  proposal: investigationProposalSchema,
+  sessionId: z.string(),
+  toolName: z.literal("apply_policy_patch"),
+  turnId: z.string(),
+});
+
+export const investigationExecutionEvidenceSchema = z.strictObject({
+  analysis: investigationAnalysisSchema,
+  diagnosis: investigationDiagnosisSchema,
+  pendingAction: pendingPolicyActionSchema,
+  subagents: z.tuple([subagentEvidenceSchema, subagentEvidenceSchema]),
+});
+
+export type InvestigationExecutionEvidence = z.infer<
+  typeof investigationExecutionEvidenceSchema
+>;
+
 export interface BaselineExecutionRequest {
   mcpAuthorization: string;
   runId: string;
   signal?: AbortSignal;
+}
+
+export interface InvestigationExecutionRequest {
+  bundle: EvidenceBundle;
+  mcpAuthorization: string;
+  policy: { hash: string; version: number };
+  signal?: AbortSignal;
+  trustedDestination: string;
 }
 
 export class RuntimeSmokeStageError extends Error {
@@ -127,4 +199,7 @@ export interface TrueForgeRuntime {
   executeSmoke(options?: {
     signal?: AbortSignal;
   }): Promise<RuntimeSmokeEvidence>;
+  executeInvestigation?: (
+    request: InvestigationExecutionRequest,
+  ) => Promise<InvestigationExecutionEvidence>;
 }

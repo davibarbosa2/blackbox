@@ -7,11 +7,16 @@ import type {
 } from "../evidence/ledger.js";
 import { classifyTrueForgeFailure } from "../failure.js";
 import type { CapabilityPolicy } from "../policy/capability-policy.js";
+import {
+  type DurableIncidentRead,
+  SqliteRemediationStore,
+} from "../remediation/store.js";
 import type {
   BaselineRunObservation,
   BaselineRunObservationContext,
 } from "../observability/evlog.js";
 import { createBaselineRunManifest } from "../scenario/definition.js";
+import { investigationExecutionEvidenceSchema } from "../trueforge/runtime.js";
 import type {
   BaselineExecutionEvidence,
   TrueForgeRuntime,
@@ -32,6 +37,8 @@ export class IncidentCoordinator {
   readonly #modelId: string;
   readonly #policy: CapabilityPolicy;
   readonly #runtime: TrueForgeRuntime;
+  readonly #remediations: SqliteRemediationStore;
+  readonly #trustedDestination: string;
   readonly #observeBaselineRun:
     | ((context: BaselineRunObservationContext) => BaselineRunObservation)
     | undefined;
@@ -51,6 +58,8 @@ export class IncidentCoordinator {
     modelAlias: string,
     modelId: string,
     baseUrl: string,
+    remediations: SqliteRemediationStore,
+    trustedDestination: string,
     observeBaselineRun?: (
       context: BaselineRunObservationContext,
     ) => BaselineRunObservation,
@@ -61,6 +70,8 @@ export class IncidentCoordinator {
     this.#modelAlias = modelAlias;
     this.#modelId = modelId;
     this.#baseUrl = baseUrl;
+    this.#remediations = remediations;
+    this.#trustedDestination = trustedDestination;
     this.#observeBaselineRun = observeBaselineRun;
   }
 
@@ -114,6 +125,10 @@ export class IncidentCoordinator {
     if (bundle !== undefined) return { bundle, status: "completed" };
     if (this.#active?.runId === runId) return { status: "running" };
     return undefined;
+  }
+
+  readIncident(incidentId: string): DurableIncidentRead | undefined {
+    return this.#remediations.read(incidentId);
   }
 
   isMcpAuthorized(authorization: string | undefined): boolean {
@@ -181,10 +196,78 @@ export class IncidentCoordinator {
       ]);
       const bundle = this.#ledger.finalizeBaseline(runId);
       safelyObserve(() => observation?.completed(bundle));
+      if (bundle.verdict === "VULNERABLE") {
+        await this.#investigate(bundle, mcpAuthorization, signal);
+      }
     } catch (error) {
       safelyObserve(() => observation?.finalizationFailed());
       throw error;
     }
+  }
+
+  async #investigate(
+    bundle: EvidenceBundle,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const incidentId = bundle.manifest.incidentId;
+    this.#remediations.start(
+      incidentId,
+      bundle.manifest.runId,
+      bundle.bundleHash,
+    );
+    const executeInvestigation = this.#runtime.executeInvestigation;
+    if (executeInvestigation === undefined) {
+      this.#remediations.validationFailed(
+        incidentId,
+        "TrueForge investigation runtime is unavailable",
+      );
+      return;
+    }
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const policy = this.#policy.read();
+        const evidence = investigationExecutionEvidenceSchema.parse(
+          await executeInvestigation({
+            bundle,
+            mcpAuthorization,
+            policy: { hash: policy.hash, version: policy.version },
+            signal,
+            trustedDestination: this.#trustedDestination,
+          }),
+        );
+        validateInvestigationEvidence(evidence, bundle);
+        this.#remediations.drafted(incidentId);
+        const dryRun = this.#policy.dryRunPatch(
+          evidence.pendingAction.proposal.patch,
+        );
+        this.#remediations.dryRunPassed(incidentId, dryRun);
+        this.#remediations.awaitingApproval(incidentId, {
+          analysis: evidence.analysis,
+          diagnosis: evidence.diagnosis,
+          dryRun,
+          evidenceJustification:
+            evidence.pendingAction.proposal.evidenceJustification,
+          pendingDecision: {
+            actionId: evidence.pendingAction.actionId,
+            callId: evidence.pendingAction.callId,
+            sessionId: evidence.pendingAction.sessionId,
+            toolName: evidence.pendingAction.toolName,
+            turnId: evidence.pendingAction.turnId,
+          },
+          subagents: evidence.subagents,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    this.#remediations.validationFailed(
+      incidentId,
+      lastError instanceof Error ? lastError.message : "Investigation failed",
+    );
   }
 
   #startObservation(
@@ -195,6 +278,32 @@ export class IncidentCoordinator {
     } catch {
       return undefined;
     }
+  }
+}
+
+function validateInvestigationEvidence(
+  evidence: ReturnType<typeof investigationExecutionEvidenceSchema.parse>,
+  bundle: EvidenceBundle,
+): void {
+  const proposal = evidence.pendingAction.proposal;
+  if (
+    proposal.evidenceJustification.bundleHash !== bundle.bundleHash ||
+    proposal.evidenceJustification.runId !== bundle.manifest.runId
+  ) {
+    throw new Error("Policy Patch justification does not match Baseline evidence");
+  }
+  if (
+    evidence.diagnosis.canonicalCause !== proposal.canonicalCause ||
+    new Set(evidence.subagents.map((subagent) => subagent.threadId)).size !== 2
+  ) {
+    throw new Error("Investigation evidence does not prove two focused subagents");
+  }
+  if (
+    !evidence.analysis.execution.stdout
+      .split(/\r?\n/)
+      .includes("BLACKBOX_INVESTIGATION_ANALYSIS_OK")
+  ) {
+    throw new Error("Daytona analysis artifact did not prove the diagnosis");
   }
 }
 
