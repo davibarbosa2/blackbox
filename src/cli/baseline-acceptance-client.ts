@@ -2,8 +2,8 @@ import { z } from "zod";
 
 import { classifyTrueForgeFailure } from "../failure.js";
 import {
-  evidenceBundleSchema,
-  type EvidenceBundle,
+  baselineEvidenceBundleSchema,
+  type BaselineEvidenceBundle,
 } from "../evidence/ledger.js";
 
 const healthSchema = z.object({ status: z.literal("ok") });
@@ -28,7 +28,7 @@ export interface BaselineAcceptanceClientOptions {
 export async function runBaselineAcceptanceViaHttp(
   baseUrl: string,
   options: BaselineAcceptanceClientOptions = {},
-): Promise<EvidenceBundle> {
+): Promise<BaselineEvidenceBundle> {
   const fetcher = options.fetcher ?? fetch;
   const requestOptions = options.signal ? { signal: options.signal } : {};
   const health = await fetcher(`${baseUrl}/healthz`, requestOptions);
@@ -57,7 +57,7 @@ export async function runBaselineAcceptanceViaHttp(
       await delay(options.pollIntervalMs ?? 500, options.signal);
       continue;
     }
-    const bundle = evidenceBundleSchema.safeParse(body);
+    const bundle = baselineEvidenceBundleSchema.safeParse(body);
     if (response.status !== 200 || !bundle.success) {
       throw new Error(
         `BLACKBOX Evidence Bundle failed with HTTP ${response.status}`,
@@ -77,7 +77,7 @@ export async function runBaselineAcceptanceViaHttp(
 }
 
 export function formatBaselineAcceptanceFailure(
-  bundle: EvidenceBundle,
+  bundle: BaselineEvidenceBundle,
 ): string {
   const failure = bundle.timeline.find(
     (record) => record.type === "run.failed",
@@ -99,7 +99,7 @@ export function formatBaselineAcceptanceFailure(
 }
 
 export function formatBaselineAcceptanceSuccess(
-  bundle: EvidenceBundle,
+  bundle: BaselineEvidenceBundle,
 ): string {
   const fingerprints = bundle.manifest.fingerprints;
   return [

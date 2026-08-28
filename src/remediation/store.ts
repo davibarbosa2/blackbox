@@ -52,10 +52,32 @@ const dryRunPassedSchema = z.object({
 });
 
 const validationFailedSchema = z.object({
+  decision: z.lazy(() => remediationDecisionEvidenceSchema).optional(),
   dryRun: policyPatchDryRunSchema.optional(),
   error: z.string(),
   lifecycle: lifecycleSchema,
   pendingDecision: pendingPolicyDecisionSchema.optional(),
+  policyReadback: policyReadSchema.optional(),
+  verification: z
+    .object({
+      control: z
+        .object({
+          bundleHash: z.string().length(64),
+          complete: z.boolean(),
+          controlResult: z.enum(["PASSED", "INCONCLUSIVE"]),
+          runId: z.string(),
+        })
+        .optional(),
+      replay: z
+        .object({
+          bundleHash: z.string().length(64),
+          complete: z.boolean(),
+          runId: z.string(),
+          verdict: z.enum(["PROTECTED", "INCONCLUSIVE"]),
+        })
+        .optional(),
+    })
+    .optional(),
   state: z.literal("VALIDATION_FAILED"),
 });
 
@@ -105,6 +127,51 @@ const staleSchema = z.object({
   state: z.literal("STALE"),
 });
 
+const appliedSchema = z.object({
+  decision: remediationDecisionEvidenceSchema.extend({
+    decision: z.literal("allow"),
+  }),
+  dryRun: policyPatchDryRunSchema,
+  lifecycle: lifecycleSchema,
+  policyReadback: policyReadSchema,
+  state: z.literal("APPLIED"),
+});
+
+const replayVerificationSchema = z.object({
+  bundleHash: z.string().length(64),
+  complete: z.boolean(),
+  runId: z.string(),
+  verdict: z.enum(["PROTECTED", "INCONCLUSIVE"]),
+});
+const controlVerificationSchema = z.object({
+  bundleHash: z.string().length(64),
+  complete: z.boolean(),
+  controlResult: z.enum(["PASSED", "INCONCLUSIVE"]),
+  runId: z.string(),
+});
+
+const verifyingSchema = appliedSchema.extend({
+  state: z.literal("VERIFYING"),
+  verification: z.object({
+    control: controlVerificationSchema.optional(),
+    replay: replayVerificationSchema.optional(),
+  }),
+});
+
+const verifiedSchema = appliedSchema.extend({
+  state: z.literal("VERIFIED"),
+  verification: z.object({
+    control: controlVerificationSchema.extend({
+      complete: z.literal(true),
+      controlResult: z.literal("PASSED"),
+    }),
+    replay: replayVerificationSchema.extend({
+      complete: z.literal(true),
+      verdict: z.literal("PROTECTED"),
+    }),
+  }),
+});
+
 export const durableIncidentReadSchema = z.object({
   baseline: baselineSchema,
   incidentId: z.string(),
@@ -117,6 +184,9 @@ export const durableIncidentReadSchema = z.object({
     awaitingApprovalSchema,
     deniedSchema,
     staleSchema,
+    appliedSchema,
+    verifyingSchema,
+    verifiedSchema,
   ]),
 });
 
@@ -238,6 +308,97 @@ export class SqliteRemediationStore {
     });
   }
 
+  applied(
+    incidentId: string,
+    decision: RemediationDecisionEvidence & { decision: "allow" },
+    policyReadback: z.infer<typeof policyReadSchema>,
+  ): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (
+      current.remediation.state === "APPLIED" ||
+      current.remediation.state === "VERIFYING" ||
+      current.remediation.state === "VERIFIED"
+    ) {
+      return current;
+    }
+    if (current.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error(`Incident ${incidentId} is not awaiting approval`);
+    }
+    return this.#update(current, {
+      decision,
+      dryRun: current.remediation.dryRun,
+      lifecycle: appendLifecycle(current, "APPLIED"),
+      policyReadback,
+      state: "APPLIED",
+    });
+  }
+
+  verifying(incidentId: string): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state === "VERIFYING") return current;
+    if (current.remediation.state !== "APPLIED") {
+      throw new Error(`Incident ${incidentId} has not applied its Policy Patch`);
+    }
+    return this.#update(current, {
+      ...current.remediation,
+      lifecycle: appendLifecycle(current, "VERIFYING"),
+      state: "VERIFYING",
+      verification: {},
+    });
+  }
+
+  recordReplay(
+    incidentId: string,
+    replay: z.infer<typeof replayVerificationSchema>,
+  ): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state !== "VERIFYING") {
+      throw new Error(`Incident ${incidentId} is not verifying`);
+    }
+    return this.#update(current, {
+      ...current.remediation,
+      verification: { ...current.remediation.verification, replay },
+    });
+  }
+
+  recordControl(
+    incidentId: string,
+    control: z.infer<typeof controlVerificationSchema>,
+  ): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state !== "VERIFYING") {
+      throw new Error(`Incident ${incidentId} is not verifying`);
+    }
+    return this.#update(current, {
+      ...current.remediation,
+      verification: { ...current.remediation.verification, control },
+    });
+  }
+
+  verified(incidentId: string): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state === "VERIFIED") return current;
+    if (
+      current.remediation.state !== "VERIFYING" ||
+      current.remediation.verification.replay?.verdict !== "PROTECTED" ||
+      !current.remediation.verification.replay.complete ||
+      current.remediation.verification.control?.controlResult !== "PASSED" ||
+      !current.remediation.verification.control.complete
+    ) {
+      throw new Error(`Incident ${incidentId} has not passed verification`);
+    }
+    const incident = durableIncidentReadSchema.parse({
+      ...current,
+      incidentStatus: "RESOLVED",
+      remediation: {
+        ...current.remediation,
+        lifecycle: appendLifecycle(current, "VERIFIED"),
+        state: "VERIFIED",
+      },
+    });
+    return this.#writeIncident(incident);
+  }
+
   drafted(incidentId: string): DurableIncidentRead {
     const current = this.#readRequired(incidentId);
     if (current.remediation.state === "DRAFTED") return current;
@@ -288,7 +449,9 @@ export class SqliteRemediationStore {
     const current = this.#readRequired(incidentId);
     const dryRun =
       current.remediation.state === "DRY_RUN_PASSED" ||
-      current.remediation.state === "AWAITING_APPROVAL"
+      current.remediation.state === "AWAITING_APPROVAL" ||
+      current.remediation.state === "APPLIED" ||
+      current.remediation.state === "VERIFYING"
         ? current.remediation.dryRun
         : undefined;
     const failure: z.infer<typeof validationFailedSchema> = {
@@ -299,6 +462,16 @@ export class SqliteRemediationStore {
     if (dryRun !== undefined) failure.dryRun = dryRun;
     if (pendingDecision !== undefined) {
       failure.pendingDecision = pendingDecision;
+    }
+    if (
+      current.remediation.state === "APPLIED" ||
+      current.remediation.state === "VERIFYING"
+    ) {
+      failure.decision = current.remediation.decision;
+      failure.policyReadback = current.remediation.policyReadback;
+    }
+    if (current.remediation.state === "VERIFYING") {
+      failure.verification = current.remediation.verification;
     }
     return this.#update(current, failure);
   }
@@ -325,9 +498,13 @@ export class SqliteRemediationStore {
     remediation: DurableIncidentRead["remediation"],
   ): DurableIncidentRead {
     const incident = durableIncidentReadSchema.parse({ ...current, remediation });
+    return this.#writeIncident(incident);
+  }
+
+  #writeIncident(incident: DurableIncidentRead): DurableIncidentRead {
     this.#database
       .prepare("UPDATE incidents SET record_json = ? WHERE incident_id = ?")
-      .run(JSON.stringify(incident), current.incidentId);
+      .run(JSON.stringify(incident), incident.incidentId);
     return incident;
   }
 }

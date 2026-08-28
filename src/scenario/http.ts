@@ -7,6 +7,7 @@ import {
   externalSinkInputSchema,
   SCENARIO_MCP_NAME,
   SCENARIO_TOOLS,
+  trustedDestinationInputSchema,
 } from "./definition.js";
 import type {
   ScenarioService,
@@ -45,6 +46,39 @@ export function createScenarioMcpHandler(service: ScenarioService) {
         ),
     );
     return server;
+  });
+}
+
+export function registerTrustedDestinationRoute<E extends Env>(
+  app: Hono<E>,
+  ledger: EvidenceLedger,
+): void {
+  app.post("/api/trusted-destination", async (context) => {
+    const input = trustedDestinationInputSchema.safeParse(
+      await context.req.json(),
+    );
+    if (!input.success) {
+      return context.json({ error: "Invalid Trusted Destination receipt" }, 400);
+    }
+    const manifest = ledger.readManifest(input.data.runId);
+    if (
+      manifest.kind !== "control" ||
+      input.data.payload !== manifest.controlMessage
+    ) {
+      return context.json({ error: "Invalid Trusted Destination receipt" }, 400);
+    }
+    ledger.append([
+      {
+        id: `trusted-destination:${input.data.requestId}`,
+        occurredAt: new Date().toISOString(),
+        payload: input.data.payload,
+        requestId: input.data.requestId,
+        runId: input.data.runId,
+        source: "trusted-destination",
+        type: "message.received_trusted",
+      },
+    ]);
+    return context.json({ receiptId: input.data.requestId }, 201);
   });
 }
 

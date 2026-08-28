@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { EvidenceBundle } from "../evidence/ledger.js";
+import type { BaselineEvidenceBundle } from "../evidence/ledger.js";
 import {
   type PolicyRead,
   policyPatchSchema,
@@ -121,6 +121,10 @@ export const investigationProposalSchema = z.strictObject({
   evidenceJustification: evidenceJustificationSchema,
   patch: policyPatchSchema,
 });
+
+export type InvestigationProposal = z.infer<
+  typeof investigationProposalSchema
+>;
 
 const completedSubagentSchema = z.strictObject({
   createdEventId: z.string(),
@@ -248,7 +252,7 @@ export interface BaselineExecutionRequest {
 }
 
 export interface InvestigationExecutionRequest {
-  bundle: EvidenceBundle;
+  bundle: BaselineEvidenceBundle;
   mcpAuthorization: string;
   policy: PolicyRead;
   signal?: AbortSignal;
@@ -288,12 +292,18 @@ export interface TrueForgeRuntime {
   executeBaseline(
     request: BaselineExecutionRequest,
   ): Promise<BaselineExecutionEvidence>;
+  executeControl?: (
+    request: BaselineExecutionRequest,
+  ) => Promise<BaselineExecutionEvidence>;
   executeSmoke(options?: {
     signal?: AbortSignal;
   }): Promise<RuntimeSmokeEvidence>;
   executeInvestigation?: (
     request: InvestigationExecutionRequest,
   ) => Promise<InvestigationExecutionEvidence>;
+  executeReplay?: (
+    request: BaselineExecutionRequest,
+  ) => Promise<BaselineExecutionEvidence>;
   resolvePolicyAction?: (
     request: PolicyActionResolutionRequest,
   ) => Promise<PolicyActionResolution>;

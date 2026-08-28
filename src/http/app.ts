@@ -28,6 +28,7 @@ import {
 import {
   createScenarioMcpHandler,
   registerExternalSinkRoute,
+  registerTrustedDestinationRoute,
 } from "../scenario/http.js";
 import { ScenarioService } from "../scenario/service.js";
 import { RuntimeSmokeCoordinator } from "../smoke/coordinator.js";
@@ -109,9 +110,9 @@ function createIncidentApplication(
     ledger,
     policy,
     incidentOptions.baseUrl,
+    trustedDestination,
   );
   const mcp = createScenarioMcpHandler(service);
-  const investigatorMcp = createInvestigatorMcpHandler();
   const coordinatorOptions: IncidentCoordinatorOptions = {
     baseUrl: incidentOptions.baseUrl,
     ledger,
@@ -129,6 +130,9 @@ function createIncidentApplication(
       options.observability.observeBaselineRun;
   }
   const coordinator = new IncidentCoordinator(coordinatorOptions);
+  const investigatorMcp = createInvestigatorMcpHandler((proposal) =>
+    coordinator.applyApprovedPolicyPatch(proposal),
+  );
   return {
     coordinator,
     investigatorMcp,
@@ -200,6 +204,7 @@ function buildApp(
       return incident.investigatorMcp.fetch(request);
     });
     registerExternalSinkRoute(app, incident.ledger);
+    registerTrustedDestinationRoute(app, incident.ledger);
     app.post("/api/incidents", (context) => {
       const result = incident.coordinator.start();
       if (!result.started) {

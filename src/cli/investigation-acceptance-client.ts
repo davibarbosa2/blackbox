@@ -1,4 +1,4 @@
-import type { EvidenceBundle } from "../evidence/ledger.js";
+import type { BaselineEvidenceBundle } from "../evidence/ledger.js";
 import {
   durableIncidentReadSchema,
   type DurableIncidentRead,
@@ -18,7 +18,7 @@ export async function runInvestigationAcceptanceViaHttp(
 
 export async function waitForInvestigationViaHttp(
   baseUrl: string,
-  bundle: EvidenceBundle,
+  bundle: BaselineEvidenceBundle,
   options: BaselineAcceptanceClientOptions = {},
 ): Promise<DurableIncidentRead> {
   const fetcher = options.fetcher ?? fetch;
@@ -72,7 +72,7 @@ export function formatInvestigationAcceptanceSuccess(
 
 function assertAcceptanceEvidence(
   incident: DurableIncidentRead,
-  bundle: EvidenceBundle,
+  bundle: BaselineEvidenceBundle,
 ): void {
   if (incident.remediation.state !== "AWAITING_APPROVAL") {
     throw new Error("Investigation did not reach AWAITING_APPROVAL");

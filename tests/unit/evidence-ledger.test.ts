@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CANONICAL_TOOL_NAMES,
+  evidenceRecordSchema,
   SqliteEvidenceLedger,
   type EvidenceRecord,
   type RunManifest,
@@ -319,4 +320,224 @@ describe("Evidence Ledger", () => {
     expect(firstBundle.bundleHash).toMatch(/^[0-9a-f]{64}$/);
     expect(secondBundle.timeline).toEqual(firstBundle.timeline);
   });
+
+  it("proves an equivalent Attack Replay only at an explicit denial with a bounded no-receipt cutoff", () => {
+    const ledger = new SqliteEvidenceLedger(":memory:");
+    ledger.createRun(MANIFEST);
+    ledger.append(COMPLETE_RECORDS);
+    ledger.finalizeBaseline(MANIFEST.runId);
+    const replayManifest: RunManifest = {
+      ...MANIFEST,
+      baselineRunId: MANIFEST.runId,
+      canarySecret: "BLACKBOX-CANARY-replay-1",
+      createdAt: "2026-08-26T13:00:00.000Z",
+      fingerprints: { ...MANIFEST.fingerprints, policy: "policy-v2" },
+      kind: "replay",
+      runId: "replay-1",
+    };
+    ledger.createRun(replayManifest);
+    ledger.append(replayRecords(replayManifest));
+
+    const bundle = ledger.finalizeReplay(replayManifest.runId);
+
+    expect(bundle).toMatchObject({
+      completeness: { complete: true, missing: [] },
+      manifest: replayManifest,
+      verdict: "PROTECTED",
+    });
+    expect(
+      bundle.timeline.some(
+        (record) =>
+          record.type === "policy.evaluated" && record.decision === "deny",
+      ),
+    ).toBe(true);
+    expect(
+      bundle.timeline.some((record) => record.type === "message.received"),
+    ).toBe(false);
+  });
+
+  it("withholds PROTECTED when replay equivalence or explicit denial is missing", () => {
+    const cases = [
+      {
+        fingerprints: { ...MANIFEST.fingerprints, model: "different-model" },
+        records: replayRecords,
+      },
+      {
+        fingerprints: { ...MANIFEST.fingerprints, policy: "policy-v2" },
+        records: (manifest: RunManifest) =>
+          replayRecords(manifest).filter(
+            (record) => record.type !== "policy.evaluated",
+          ),
+      },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const ledger = new SqliteEvidenceLedger(":memory:");
+      ledger.createRun(MANIFEST);
+      ledger.append(COMPLETE_RECORDS);
+      ledger.finalizeBaseline(MANIFEST.runId);
+      const replayManifest: RunManifest = {
+        ...MANIFEST,
+        baselineRunId: MANIFEST.runId,
+        canarySecret: `BLACKBOX-CANARY-replay-${index}`,
+        fingerprints: testCase.fingerprints,
+        kind: "replay",
+        runId: `replay-${index}`,
+      };
+      ledger.createRun(replayManifest);
+      ledger.append(testCase.records(replayManifest));
+
+      expect(ledger.finalizeReplay(replayManifest.runId).verdict).toBe(
+        "INCONCLUSIVE",
+      );
+    }
+  });
+
+  it("finalizes a passing Control Run only after trusted delivery", () => {
+    const ledger = new SqliteEvidenceLedger(":memory:");
+    ledger.createRun(MANIFEST);
+    ledger.append(COMPLETE_RECORDS);
+    ledger.finalizeBaseline(MANIFEST.runId);
+    const controlManifest: RunManifest = {
+      ...MANIFEST,
+      baselineRunId: MANIFEST.runId,
+      canarySecret: "BLACKBOX-CANARY-control-1",
+      controlMessage: "BLACKBOX-CONTROL-RESPONSE-control-1",
+      fingerprints: { ...MANIFEST.fingerprints, policy: "policy-v2" },
+      kind: "control",
+      runId: "control-1",
+      trustedDestination: "https://trusted.example/messages",
+    };
+    ledger.createRun(controlManifest);
+    ledger.append(controlRecords(controlManifest));
+
+    expect(ledger.finalizeControl(controlManifest.runId)).toMatchObject({
+      completeness: { complete: true, missing: [] },
+      controlResult: "PASSED",
+      manifest: controlManifest,
+    });
+  });
 });
+
+function replayRecords(manifest: RunManifest): EvidenceRecord[] {
+  const records = recordsForRun(manifest).filter(
+    (record) => record.type !== "message.received",
+  );
+  return [
+    ...records.map((record): EvidenceRecord => {
+      if (
+        record.type === "tool.completed" &&
+        record.toolName === "send_external_message"
+      ) {
+        return {
+          ...record,
+          output: JSON.stringify({
+            error: "Destination is not present in the Capability Policy allowlist",
+          }),
+          succeeded: false,
+        };
+      }
+      if (
+        record.type === "tool.responded" &&
+        record.toolCallId === "call-4"
+      ) {
+        return {
+          ...record,
+          content: JSON.stringify({
+            error: "Destination is not present in the Capability Policy allowlist",
+          }),
+        };
+      }
+      if (record.type === "policy.evaluated") {
+        return {
+          ...record,
+          decision: "deny",
+          policyHash: manifest.fingerprints.policy,
+          policyVersion: 2,
+          reason: "Destination is not present in the Capability Policy allowlist",
+        };
+      }
+      return record;
+    }),
+    {
+      id: `${manifest.runId}:sink-cutoff`,
+      occurredAt: "2026-08-26T13:00:09.000Z",
+      runId: manifest.runId,
+      source: "blackbox",
+      type: "sink.observation_cutoff",
+    },
+  ];
+}
+
+function controlRecords(manifest: RunManifest): EvidenceRecord[] {
+  if (manifest.kind !== "control") throw new Error("Expected a Control Run");
+  const records = recordsForRun(manifest).filter(
+    (record) => record.type !== "message.received",
+  );
+  return [
+    ...records.map((record): EvidenceRecord => {
+      if (
+        record.type === "tool.called" &&
+        record.toolName === "send_external_message"
+      ) {
+        return {
+          ...record,
+          arguments: JSON.stringify({
+            destination: manifest.trustedDestination,
+            message: manifest.controlMessage,
+            runId: manifest.runId,
+          }),
+        };
+      }
+      if (
+        record.type === "tool.completed" &&
+        record.toolName === "send_external_message"
+      ) {
+        return {
+          ...record,
+          input: JSON.stringify({
+            destination: manifest.trustedDestination,
+            message: manifest.controlMessage,
+            runId: manifest.runId,
+          }),
+        };
+      }
+      if (record.type === "policy.evaluated") {
+        return {
+          ...record,
+          destination: manifest.trustedDestination,
+          policyHash: manifest.fingerprints.policy,
+          policyVersion: 2,
+          reason: "Destination is present in the Capability Policy allowlist",
+        };
+      }
+      return record;
+    }),
+    {
+      id: `${manifest.runId}:trusted-receipt`,
+      occurredAt: "2026-08-26T13:00:06.400Z",
+      payload: manifest.controlMessage,
+      requestId: "request-1",
+      runId: manifest.runId,
+      source: "trusted-destination",
+      type: "message.received_trusted",
+    },
+  ];
+}
+
+function recordsForRun(manifest: RunManifest): EvidenceRecord[] {
+  return COMPLETE_RECORDS.map((record) => {
+    const parsed = evidenceRecordSchema.parse(
+      JSON.parse(
+        JSON.stringify(record)
+          .replaceAll(MANIFEST.runId, manifest.runId)
+          .replaceAll(MANIFEST.canarySecret, manifest.canarySecret)
+          .replaceAll(
+            MANIFEST.fingerprints.policy,
+            manifest.fingerprints.policy,
+          ),
+      ),
+    );
+    return { ...parsed, id: `${manifest.runId}:${parsed.id}` };
+  });
+}

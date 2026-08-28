@@ -2,13 +2,23 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { isDeepStrictEqual } from "node:util";
 
 import type {
+  BaselineEvidenceBundle,
+  ControlEvidenceBundle,
   EvidenceBundle,
   EvidenceLedger,
   EvidenceRecord,
+  ReplayEvidenceBundle,
+  RunManifest,
 } from "../evidence/ledger.js";
+import { baselineEvidenceBundleSchema } from "../evidence/ledger.js";
 import { classifyTrueForgeFailure } from "../failure.js";
-import type { CapabilityPolicy } from "../policy/capability-policy.js";
+import type {
+  CapabilityPolicy,
+  PolicyApplicationResult,
+  PolicyApprovalEvidence,
+} from "../policy/capability-policy.js";
 import {
+  type AwaitingApprovalRemediation,
   type DurableIncidentRead,
   type RemediationDecisionRequest,
   SqliteRemediationStore,
@@ -17,9 +27,15 @@ import type {
   BaselineRunObservation,
   BaselineRunObservationContext,
 } from "../observability/evlog.js";
-import { createBaselineRunManifest } from "../scenario/definition.js";
+import {
+  createBaselineRunManifest,
+  createControlRunManifest,
+  createReplayRunManifest,
+} from "../scenario/definition.js";
 import {
   InvestigationExecutionError,
+  type InvestigationProposal,
+  investigationProposalSchema,
   investigationExecutionEvidenceSchema,
   policyActionResolutionSchema,
 } from "../trueforge/runtime.js";
@@ -32,7 +48,7 @@ export type StartIncidentResult =
   | { incidentId: string; runId: string; started: true }
   | { activeRunId: string; started: false };
 
-export type BaselineRunRead =
+export type RunRead =
   | { status: "running" }
   | { bundle: EvidenceBundle; status: "completed" };
 
@@ -78,6 +94,14 @@ export class IncidentCoordinator {
         completion: Promise<void>;
         controller: AbortController;
         incidentId: string;
+        mcpAuthorization: string;
+      }
+    | undefined;
+  #pendingApplication:
+    | {
+        approval: PolicyApprovalEvidence;
+        incidentId: string;
+        proposal: InvestigationProposal;
       }
     | undefined;
 
@@ -138,7 +162,7 @@ export class IncidentCoordinator {
     return { incidentId, runId, started: true };
   }
 
-  read(runId: string): BaselineRunRead | undefined {
+  read(runId: string): RunRead | undefined {
     const bundle = this.#ledger.readBundle(runId);
     if (bundle !== undefined) return { bundle, status: "completed" };
     if (this.#active?.runId === runId) return { status: "running" };
@@ -193,23 +217,47 @@ export class IncidentCoordinator {
     }
 
     const controller = new AbortController();
+    const mcpAuthorization =
+      this.#remediations.readMcpAuthorization(incidentId);
     const completion = this.#resolveDecision(
       incidentId,
       request,
       decidedAt,
+      mcpAuthorization,
       controller.signal,
     ).finally(() => {
       if (this.#activeDecision?.incidentId === incidentId) {
         this.#activeDecision = undefined;
       }
     });
-    this.#activeDecision = { completion, controller, incidentId };
+    this.#activeDecision = {
+      completion,
+      controller,
+      incidentId,
+      mcpAuthorization,
+    };
     void completion.catch(() => undefined);
     return { started: true };
   }
 
+  applyApprovedPolicyPatch(
+    sourceProposal: InvestigationProposal,
+  ): PolicyApplicationResult {
+    const proposal = investigationProposalSchema.parse(sourceProposal);
+    const pending = this.#pendingApplication;
+    if (pending === undefined) {
+      throw new Error("No approved Policy Patch action is being resumed");
+    }
+    if (!isDeepStrictEqual(proposal, pending.proposal)) {
+      throw new Error("Policy Patch call does not match the approved proposal");
+    }
+    return this.#policy.applyPatch(proposal.patch, pending.approval);
+  }
+
   isMcpAuthorized(authorization: string | undefined): boolean {
-    const capability = this.#active?.mcpAuthorization;
+    const capability =
+      this.#active?.mcpAuthorization ??
+      this.#activeDecision?.mcpAuthorization;
     if (capability === undefined || authorization === undefined) return false;
     const expected = Buffer.from(`Bearer ${capability}`);
     const received = Buffer.from(authorization);
@@ -230,6 +278,7 @@ export class IncidentCoordinator {
     incidentId: string,
     request: RemediationDecisionRequest,
     decidedAt: string,
+    mcpAuthorization: string,
     signal: AbortSignal,
   ): Promise<void> {
     const resolvePolicyAction = this.#runtime.resolvePolicyAction;
@@ -241,12 +290,27 @@ export class IncidentCoordinator {
       );
       return;
     }
+    const approval: PolicyApprovalEvidence = {
+      actionId: request.pendingDecision.actionId,
+      callId: request.pendingDecision.callId,
+      decidedAt,
+      sessionId: request.pendingDecision.sessionId,
+      threadId: request.pendingDecision.threadId,
+      turnId: request.pendingDecision.turnId,
+    };
+    const incident = this.#remediations.read(incidentId);
+    if (incident?.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error(`Incident ${incidentId} is not awaiting approval`);
+    }
+    const proposal = proposalFromRemediation(incident.remediation);
+    if (request.decision === "allow") {
+      this.#pendingApplication = { approval, incidentId, proposal };
+    }
     try {
       const resolution = policyActionResolutionSchema.parse(
         await resolvePolicyAction({
           decision: request.decision,
-          mcpAuthorization:
-            this.#remediations.readMcpAuthorization(incidentId),
+          mcpAuthorization,
           pendingDecision: request.pendingDecision,
           signal,
         }),
@@ -272,11 +336,40 @@ export class IncidentCoordinator {
         );
         return;
       }
-      this.#remediations.validationFailed(
+      const application =
+        this.#policy.readApplication(request.pendingDecision.actionId) ??
+        this.applyApprovedPolicyPatch(proposal);
+      if (application.status === "STALE") {
+        this.#remediations.stale(
+          incidentId,
+          {
+            ...request.pendingDecision,
+            decidedAt,
+            decision: "allow",
+          },
+          application.readback,
+        );
+        return;
+      }
+      if (
+        application.readback.hash !==
+          incident.remediation.dryRun.candidateHash ||
+        application.readback.version !==
+          incident.remediation.dryRun.candidate.version
+      ) {
+        throw new Error("Applied Capability Policy readback did not match dry-run");
+      }
+      this.#remediations.applied(
         incidentId,
-        "Remediation verification is not yet available",
-        request.pendingDecision,
+        {
+          ...request.pendingDecision,
+          decidedAt,
+          decision: "allow",
+        },
+        application.readback,
       );
+      this.#remediations.verifying(incidentId);
+      await this.#verifyRemediation(incidentId, mcpAuthorization, signal);
     } catch (error) {
       this.#remediations.validationFailed(
         incidentId,
@@ -285,7 +378,137 @@ export class IncidentCoordinator {
           : "TrueForge policy-action resolution failed",
         request.pendingDecision,
       );
+    } finally {
+      if (this.#pendingApplication?.incidentId === incidentId) {
+        this.#pendingApplication = undefined;
+      }
     }
+  }
+
+  async #verifyRemediation(
+    incidentId: string,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const incident = this.#remediations.read(incidentId);
+    if (incident?.remediation.state !== "VERIFYING") {
+      throw new Error(`Incident ${incidentId} is not verifying`);
+    }
+    const baseline = baselineEvidenceBundleSchema.parse(
+      this.#ledger.readBundle(incident.baseline.runId),
+    );
+    const executeReplay = this.#runtime.executeReplay;
+    const executeControl = this.#runtime.executeControl;
+    if (executeReplay === undefined || executeControl === undefined) {
+      throw new Error("TrueForge verification runtime is unavailable");
+    }
+
+    const replayManifest = createReplayRunManifest(
+      baseline.manifest,
+      randomUUID(),
+      `BLACKBOX-CANARY-${randomUUID()}`,
+      new Date().toISOString(),
+      this.#policy,
+    );
+    await this.#executeVerificationRun(
+      replayManifest,
+      executeReplay,
+      mcpAuthorization,
+      signal,
+    );
+    await waitForCutoff(50, signal);
+    this.#ledger.append([
+      {
+        id: `${replayManifest.runId}:sink-cutoff`,
+        occurredAt: new Date().toISOString(),
+        runId: replayManifest.runId,
+        source: "blackbox",
+        type: "sink.observation_cutoff",
+      },
+    ]);
+    const replay = this.#ledger.finalizeReplay(replayManifest.runId);
+    this.#remediations.recordReplay(incidentId, replayReference(replay));
+
+    const controlManifest = createControlRunManifest(
+      baseline.manifest,
+      randomUUID(),
+      `BLACKBOX-CANARY-${randomUUID()}`,
+      `BLACKBOX-CONTROL-RESPONSE-${randomUUID()}`,
+      new Date().toISOString(),
+      this.#policy,
+      this.#trustedDestination,
+    );
+    await this.#executeVerificationRun(
+      controlManifest,
+      executeControl,
+      mcpAuthorization,
+      signal,
+    );
+    const control = this.#ledger.finalizeControl(controlManifest.runId);
+    this.#remediations.recordControl(incidentId, controlReference(control));
+
+    if (
+      replay.verdict !== "PROTECTED" ||
+      !replay.completeness.complete ||
+      control.controlResult !== "PASSED" ||
+      !control.completeness.complete
+    ) {
+      throw new Error(
+        `Remediation verification evidence gates did not pass: replay=${replay.completeness.missing.join(",") || "complete"}; control=${control.completeness.missing.join(",") || "complete"}`,
+      );
+    }
+    this.#remediations.verified(incidentId);
+  }
+
+  async #executeVerificationRun(
+    manifest: RunManifest,
+    execute: NonNullable<TrueForgeRuntime["executeReplay"]>,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.#ledger.createRun(manifest);
+    this.#ledger.append([
+      stateRecord(manifest.runId, "PREPARING", manifest.createdAt),
+      stateRecord(manifest.runId, "EXECUTING", nextInstant(manifest.createdAt)),
+    ]);
+    let latestObservedAt = nextInstant(manifest.createdAt);
+    try {
+      const evidence = await execute({
+        mcpAuthorization,
+        runId: manifest.runId,
+        signal,
+      });
+      const records = baselineEvidenceRecords(manifest.runId, evidence);
+      this.#ledger.append(records);
+      latestObservedAt = records.reduce(
+        (latest, record) =>
+          record.occurredAt > latest ? record.occurredAt : latest,
+        latestObservedAt,
+      );
+    } catch (error) {
+      const failure =
+        error instanceof Error ? error : new Error("TrueForge Run failed");
+      const classified = classifyTrueForgeFailure(failure.message);
+      latestObservedAt = new Date().toISOString();
+      this.#ledger.append([
+        {
+          id: `${manifest.runId}:failed`,
+          message: classified.failure.message,
+          occurredAt: latestObservedAt,
+          runId: manifest.runId,
+          source: "blackbox",
+          stage: classified.stage,
+          type: "run.failed",
+        },
+      ]);
+    }
+    this.#ledger.append([
+      stateRecord(
+        manifest.runId,
+        "VERIFYING",
+        nextInstant(latestObservedAt),
+      ),
+    ]);
   }
 
   async #execute(
@@ -351,7 +574,7 @@ export class IncidentCoordinator {
   }
 
   async #investigate(
-    bundle: EvidenceBundle,
+    bundle: BaselineEvidenceBundle,
     mcpAuthorization: string,
     signal: AbortSignal,
   ): Promise<void> {
@@ -456,7 +679,7 @@ export class IncidentCoordinator {
 
 function validateInvestigationEvidence(
   evidence: ReturnType<typeof investigationExecutionEvidenceSchema.parse>,
-  bundle: EvidenceBundle,
+  bundle: BaselineEvidenceBundle,
   policy: ReturnType<CapabilityPolicy["read"]>,
   trustedDestination: string,
 ): void {
@@ -493,6 +716,61 @@ function validateInvestigationEvidence(
   ) {
     throw new Error("Daytona analysis artifact did not prove the diagnosis");
   }
+}
+
+function proposalFromRemediation(
+  remediation: AwaitingApprovalRemediation,
+): InvestigationProposal {
+  return investigationProposalSchema.parse({
+    canonicalCause: remediation.diagnosis.canonicalCause,
+    evidenceJustification: remediation.evidenceJustification,
+    patch: {
+      destinationAllowlist:
+        remediation.dryRun.candidate.rules.send_external_message.destinations,
+      expectedBaseHash: remediation.dryRun.base.hash,
+      expectedBaseVersion: remediation.dryRun.base.version,
+    },
+  });
+}
+
+function replayReference(replay: ReplayEvidenceBundle) {
+  return {
+    bundleHash: replay.bundleHash,
+    complete: replay.completeness.complete,
+    runId: replay.manifest.runId,
+    verdict: replay.verdict,
+  };
+}
+
+function controlReference(control: ControlEvidenceBundle) {
+  return {
+    bundleHash: control.bundleHash,
+    complete: control.completeness.complete,
+    controlResult: control.controlResult,
+    runId: control.manifest.runId,
+  };
+}
+
+async function waitForCutoff(
+  milliseconds: number,
+  signal: AbortSignal,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const complete = (): void => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = (): void => {
+      clearTimeout(timeout);
+      reject(signal.reason);
+    };
+    const timeout = setTimeout(complete, milliseconds);
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function sha256(value: string): string {

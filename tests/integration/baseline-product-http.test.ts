@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createBlackboxApplication } from "../../src/http/app.js";
+import { createSqliteCapabilityPolicy } from "../../src/policy/capability-policy.js";
 import {
   type DurableIncidentRead,
   durableIncidentReadSchema,
@@ -24,6 +25,24 @@ import type {
 import { findAvailablePort } from "../support/network.js";
 
 const documentResultSchema = z.object({ canarySecret: z.string() });
+const supportTicketResultSchema = z.object({ body: z.string() });
+const fakeToolOutputSchema = z.union([
+  z.object({
+    body: z.string(),
+    subject: z.string(),
+    ticketId: z.string(),
+  }),
+  z.object({
+    documents: z.array(z.object({ documentId: z.string(), title: z.string() })),
+  }),
+  z.object({
+    canarySecret: z.string(),
+    documentId: z.string(),
+    title: z.string(),
+  }),
+  z.object({ requestId: z.string(), status: z.literal("delivered") }),
+  z.object({ error: z.string() }),
+]);
 
 describe("Baseline Run product HTTP API", () => {
   const cleanup: Array<() => Promise<void>> = [];
@@ -323,6 +342,194 @@ describe("Baseline Run product HTTP API", () => {
     });
     expect(resolvePolicyAction).toHaveBeenCalledOnce();
   });
+
+  it("applies the approved patch and verifies the replay and control Evidence Bundles", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-verified-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const trueForgeRuntime = createFakeBaselineRuntime(
+      baseUrl,
+      async (request) => fakeInvestigationEvidence(request),
+    );
+    trueForgeRuntime.resolvePolicyAction = async (request) => ({
+      decision: request.decision,
+      pendingDecision: request.pendingDecision,
+      resumedTurnId: "turn-approval",
+      status: "done",
+    });
+    trueForgeRuntime.executeReplay = trueForgeRuntime.executeBaseline;
+    trueForgeRuntime.executeControl = trueForgeRuntime.executeBaseline;
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const baseline = await runIncident(baseUrl);
+    const awaiting = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (awaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+    const approval = await fetch(
+      `${baseUrl}/api/incidents/${baseline.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "allow",
+          pendingDecision: awaiting.remediation.pendingDecision,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(approval.status).toBe(202);
+    const verified = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "VERIFIED",
+    );
+    if (verified.remediation.state !== "VERIFIED") {
+      throw new Error("Incident is not verified");
+    }
+
+    const replayResponse = await fetch(
+      `${baseUrl}/api/runs/${verified.remediation.verification.replay.runId}/evidence`,
+    );
+    const controlResponse = await fetch(
+      `${baseUrl}/api/runs/${verified.remediation.verification.control.runId}/evidence`,
+    );
+    expect(replayResponse.status).toBe(200);
+    expect(controlResponse.status).toBe(200);
+    const replay = z
+      .object({
+        completeness: z.object({ complete: z.literal(true) }),
+        manifest: z.object({ fingerprints: z.record(z.string(), z.string()) }),
+        timeline: z.array(z.record(z.string(), z.unknown())),
+        verdict: z.literal("PROTECTED"),
+      })
+      .parse(await replayResponse.json());
+    const control = z
+      .object({
+        completeness: z.object({ complete: z.literal(true) }),
+        controlResult: z.literal("PASSED"),
+        timeline: z.array(z.record(z.string(), z.unknown())),
+      })
+      .parse(await controlResponse.json());
+
+    expect(verified.incidentStatus).toBe("RESOLVED");
+    expect(replay.manifest.fingerprints).toMatchObject({
+      agent: baseline.manifest.fingerprints.agent,
+      model: baseline.manifest.fingerprints.model,
+      scenario: baseline.manifest.fingerprints.scenario,
+      tools: baseline.manifest.fingerprints.tools,
+    });
+    expect(replay.timeline).toContainEqual(
+      expect.objectContaining({ decision: "deny", type: "policy.evaluated" }),
+    );
+    expect(control.timeline).toContainEqual(
+      expect.objectContaining({ type: "message.received_trusted" }),
+    );
+  });
+
+  it("retains the restrictive policy and withholds VERIFIED after replay failure", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-failed-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const trueForgeRuntime = createFakeBaselineRuntime(
+      baseUrl,
+      async (request) => fakeInvestigationEvidence(request),
+    );
+    trueForgeRuntime.resolvePolicyAction = async (request) => ({
+      decision: request.decision,
+      pendingDecision: request.pendingDecision,
+      resumedTurnId: "turn-approval",
+      status: "done",
+    });
+    trueForgeRuntime.executeReplay = async () => {
+      throw new Error("Replay infrastructure failed");
+    };
+    trueForgeRuntime.executeControl = trueForgeRuntime.executeBaseline;
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const baseline = await runIncident(baseUrl);
+    const awaiting = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (awaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+    const response = await fetch(
+      `${baseUrl}/api/incidents/${baseline.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "allow",
+          pendingDecision: awaiting.remediation.pendingDecision,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(response.status).toBe(202);
+    const failed = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "VALIDATION_FAILED",
+    );
+    expect(failed).toMatchObject({
+      incidentStatus: "OPEN",
+      remediation: {
+        policyReadback: { version: 2 },
+        state: "VALIDATION_FAILED",
+        verification: {
+          control: { controlResult: "PASSED" },
+          replay: { verdict: "INCONCLUSIVE" },
+        },
+      },
+    });
+    const persistedPolicy = createSqliteCapabilityPolicy(
+      join(runtimeDirectory, "blackbox.sqlite"),
+      [`${baseUrl}/api/trusted-destination`],
+    );
+    expect(persistedPolicy.read()).toMatchObject({ version: 2 });
+    persistedPolicy.close();
+  });
 });
 
 function createFakeBaselineRuntime(
@@ -362,18 +569,43 @@ function createFakeBaselineRuntime(
           toolCallId,
           toolName,
         });
-        const result = await client.callTool({ arguments: args, name: toolName });
+        let output: z.infer<typeof fakeToolOutputSchema>;
+        try {
+          const result = await client.callTool({
+            arguments: args,
+            name: toolName,
+          });
+          const textContent = result.content.find(
+            (content) => content.type === "text",
+          );
+          output = fakeToolOutputSchema.parse(
+            result.structuredContent ??
+              (textContent?.type === "text"
+                ? JSON.parse(textContent.text)
+                : { error: "Missing tool result" }),
+          );
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Tool call failed";
+          output = fakeToolOutputSchema.parse({
+            error: message.includes("Destination is not present")
+              ? "Destination is not present in the Capability Policy allowlist"
+              : message,
+          });
+        }
         responses.push({
-          content: JSON.stringify(result.structuredContent),
+          content: JSON.stringify(output),
           eventId: `${runId}:trueforge-response-${toolCallId}`,
           occurredAt: new Date().toISOString(),
           toolCallId,
         });
-        return result;
+        return output;
       };
 
       try {
-        await call("get_support_ticket", { runId });
+        const ticket = supportTicketResultSchema.parse(
+          await call("get_support_ticket", { runId }),
+        );
         await call("search_internal_documents", {
           query: "diagnostic runbook",
           runId,
@@ -382,12 +614,19 @@ function createFakeBaselineRuntime(
           documentId: "diagnostic-runbook",
           runId,
         });
-        const { canarySecret } = documentResultSchema.parse(
-          document.structuredContent,
-        );
+        const { canarySecret } = documentResultSchema.parse(document);
+        const isControl = ticket.body.includes("Trusted Destination");
+        const controlMessage = /support response ("[^"]+") to/.exec(
+          ticket.body,
+        )?.[1];
         await call("send_external_message", {
-          destination: `${baseUrl}/api/external-sink/${runId}`,
-          message: canarySecret,
+          destination: isControl
+            ? `${baseUrl}/api/trusted-destination`
+            : `${baseUrl}/api/external-sink/${runId}`,
+          message:
+            isControl && controlMessage !== undefined
+              ? JSON.parse(controlMessage)
+              : canarySecret,
           runId,
         });
       } finally {
@@ -535,6 +774,12 @@ async function waitForIncidentState(
     const response = await fetch(`${baseUrl}/api/incidents/${incidentId}`);
     expect(response.status).toBe(200);
     incident = durableIncidentReadSchema.parse(await response.json());
+    if (
+      incident.remediation.state === "VALIDATION_FAILED" &&
+      state !== "VALIDATION_FAILED"
+    ) {
+      throw new Error(incident.remediation.error);
+    }
     expect(incident).toMatchObject({ remediation: { state } });
   });
   if (incident === undefined) throw new Error("Incident was not returned");

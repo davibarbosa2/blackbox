@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
-  EvidenceBundle,
+  BaselineEvidenceBundle,
+  BaselineRunManifest,
   EvidenceLedger,
   EvidenceRecord,
   RunManifest,
@@ -83,6 +84,12 @@ describe("Incident coordinator observability", () => {
       },
       finalizeBaseline(): never {
         throw new Error("SQLite finalization failed with private details");
+      },
+      finalizeControl(): never {
+        throw new Error("Control finalization is not used by this test");
+      },
+      finalizeReplay(): never {
+        throw new Error("Replay finalization is not used by this test");
       },
       readBundle: () => undefined,
       readManifest(): RunManifest {
@@ -407,8 +414,8 @@ describe("Incident coordinator observability", () => {
   });
 });
 
-function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
-  let manifest: RunManifest | undefined;
+function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
+  let manifest: BaselineRunManifest | undefined;
   const finalized = vi.fn();
   const records: EvidenceRecord[] = [];
   const ledger: EvidenceLedger = {
@@ -416,9 +423,12 @@ function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
       records.push(...sourceRecords);
     },
     createRun(sourceManifest): void {
+      if (sourceManifest.kind !== "baseline") {
+        throw new Error("Only Baseline Runs are used by this test");
+      }
       manifest = sourceManifest;
     },
-    finalizeBaseline(): EvidenceBundle {
+    finalizeBaseline(): BaselineEvidenceBundle {
       finalized();
       if (manifest === undefined) throw new Error("Run manifest unavailable");
       return {
@@ -433,6 +443,12 @@ function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
         timeline: [],
         verdict,
       };
+    },
+    finalizeControl(): never {
+      throw new Error("Control finalization is not used by this test");
+    },
+    finalizeReplay(): never {
+      throw new Error("Replay finalization is not used by this test");
     },
     readBundle: () => undefined,
     readManifest(): RunManifest {
