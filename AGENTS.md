@@ -45,11 +45,6 @@ When a change affects a real-runtime boundary, run the relevant acceptance
 command from `README.md` and report infrastructure failures separately from
 product failures.
 
-Before any paid or quota-limited acceptance run, state the model, provider,
-routing fallback, and expected cost boundary. For OpenRouter BYOK, prove that
-shared-credit fallback is disabled end to end; otherwise stop and ask for
-approval instead of relying on default routing.
-
 ## Git Checkpoints
 
 - Work on a branch scoped to one issue or coherent outcome.

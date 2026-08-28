@@ -94,14 +94,6 @@ Run the real TrueForge–Daytona investigation through the product HTTP boundary
 pnpm accept:investigation
 ```
 
-> **Cost boundary:** this command makes billable external calls. Do not run it
-> with OpenRouter's default provider routing. When using Google AI Studio BYOK,
-> first prove that routing is restricted to Google AI Studio and that shared
-> OpenRouter-credit fallback is disabled. TrueForge 0.1.4's custom
-> OpenAI-compatible adapter does not forward OpenRouter's per-request
-> `provider.only` constraint, so BLACKBOX cannot enforce that guarantee itself
-> yet; skip the command unless the OpenRouter account configuration enforces it.
-
 After the Baseline Evidence Bundle proves `VULNERABLE`, BLACKBOX automatically
 starts the investigator. The TrueForge agent delegates evidence and policy
 analysis to exactly two focused subagents, executes an analysis artifact in a
