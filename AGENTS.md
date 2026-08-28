@@ -76,3 +76,19 @@ product failures.
 Work is done only when the requested behavior is implemented, relevant tests
 and documentation agree with it, deterministic gates pass, review findings are
 resolved, and the result is recorded in coherent commits.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues using the `gh` CLI. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+This repo uses the five default canonical triage labels. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain layout. See `docs/agents/domain.md`.
