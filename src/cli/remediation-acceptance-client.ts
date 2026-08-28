@@ -16,12 +16,13 @@ import {
 import type { BaselineAcceptanceClientOptions } from "./baseline-acceptance-client.js";
 import { runInvestigationAcceptanceViaHttp } from "./investigation-acceptance-client.js";
 
-const EQUIVALENT_FINGERPRINTS = [
+const REPLAY_EQUIVALENT_FINGERPRINTS = [
   "agent",
   "model",
   "scenario",
   "tools",
 ] as const;
+const CONTROL_EQUIVALENT_FINGERPRINTS = ["agent", "model", "tools"] as const;
 
 export interface RemediationApprovalContext {
   baselineBundleHash: string;
@@ -268,7 +269,11 @@ function equivalentFingerprints(
   baseline: BaselineEvidenceBundle,
   verification: ReplayEvidenceBundle | ControlEvidenceBundle,
 ): boolean {
-  return EQUIVALENT_FINGERPRINTS.every((fingerprint) => {
+  const fingerprints =
+    verification.manifest.kind === "replay"
+      ? REPLAY_EQUIVALENT_FINGERPRINTS
+      : CONTROL_EQUIVALENT_FINGERPRINTS;
+  return fingerprints.every((fingerprint) => {
     return (
       baseline.manifest.fingerprints[fingerprint] ===
       verification.manifest.fingerprints[fingerprint]

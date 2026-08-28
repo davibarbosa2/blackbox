@@ -54,13 +54,22 @@ export function registerTrustedDestinationRoute<E extends Env>(
   ledger: EvidenceLedger,
 ): void {
   app.post("/api/trusted-destination", async (context) => {
-    const input = trustedDestinationInputSchema.safeParse(
-      await context.req.json(),
-    );
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: "Invalid Trusted Destination receipt" }, 400);
+    }
+    const input = trustedDestinationInputSchema.safeParse(body);
     if (!input.success) {
       return context.json({ error: "Invalid Trusted Destination receipt" }, 400);
     }
-    const manifest = ledger.readManifest(input.data.runId);
+    let manifest: ReturnType<EvidenceLedger["readManifest"]>;
+    try {
+      manifest = ledger.readManifest(input.data.runId);
+    } catch {
+      return context.json({ error: "Control Run not found" }, 404);
+    }
     if (
       manifest.kind !== "control" ||
       input.data.payload !== manifest.controlMessage

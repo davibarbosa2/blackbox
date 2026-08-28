@@ -201,6 +201,7 @@ function verifiedFixture() {
       fingerprints: {
         ...FINGERPRINTS,
         policy: application.readback.hash,
+        scenario: "control-scenario-fingerprint",
       },
       incidentId: "incident-1",
       kind: "control" as const,

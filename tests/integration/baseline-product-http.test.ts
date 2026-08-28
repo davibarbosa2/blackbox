@@ -20,6 +20,7 @@ import {
 import type {
   BaselineExecutionEvidence,
   InvestigationExecutionEvidence,
+  InvestigationProposal,
   TrueForgeRuntime,
 } from "../../src/trueforge/runtime.js";
 import { findAvailablePort } from "../support/network.js";
@@ -348,16 +349,7 @@ describe("Baseline Run product HTTP API", () => {
     cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
     const port = await findAvailablePort();
     const baseUrl = `http://127.0.0.1:${port}`;
-    const trueForgeRuntime = createFakeBaselineRuntime(
-      baseUrl,
-      async (request) => fakeInvestigationEvidence(request),
-    );
-    trueForgeRuntime.resolvePolicyAction = async (request) => ({
-      decision: request.decision,
-      pendingDecision: request.pendingDecision,
-      resumedTurnId: "turn-approval",
-      status: "done",
-    });
+    const trueForgeRuntime = createApplyingRemediationRuntime(baseUrl);
     trueForgeRuntime.executeReplay = trueForgeRuntime.executeBaseline;
     trueForgeRuntime.executeControl = trueForgeRuntime.executeBaseline;
     const application = createBlackboxApplication({
@@ -429,6 +421,9 @@ describe("Baseline Run product HTTP API", () => {
       .object({
         completeness: z.object({ complete: z.literal(true) }),
         controlResult: z.literal("PASSED"),
+        manifest: z.object({
+          fingerprints: z.object({ scenario: z.string() }),
+        }),
         timeline: z.array(z.record(z.string(), z.unknown())),
       })
       .parse(await controlResponse.json());
@@ -440,6 +435,9 @@ describe("Baseline Run product HTTP API", () => {
       scenario: baseline.manifest.fingerprints.scenario,
       tools: baseline.manifest.fingerprints.tools,
     });
+    expect(control.manifest.fingerprints.scenario).not.toBe(
+      baseline.manifest.fingerprints.scenario,
+    );
     expect(replay.timeline).toContainEqual(
       expect.objectContaining({ decision: "deny", type: "policy.evaluated" }),
     );
@@ -448,8 +446,8 @@ describe("Baseline Run product HTTP API", () => {
     );
   });
 
-  it("retains the restrictive policy and withholds VERIFIED after replay failure", async () => {
-    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-failed-"));
+  it("rejects a matching resolver envelope when the exact MCP action did not apply", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-no-apply-"));
     cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
     const port = await findAvailablePort();
     const baseUrl = `http://127.0.0.1:${port}`;
@@ -460,9 +458,275 @@ describe("Baseline Run product HTTP API", () => {
     trueForgeRuntime.resolvePolicyAction = async (request) => ({
       decision: request.decision,
       pendingDecision: request.pendingDecision,
-      resumedTurnId: "turn-approval",
+      resumedTurnId: "turn-without-tool-call",
       status: "done",
     });
+    trueForgeRuntime.executeReplay = trueForgeRuntime.executeBaseline;
+    trueForgeRuntime.executeControl = trueForgeRuntime.executeBaseline;
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const baseline = await runIncident(baseUrl);
+    const awaiting = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (awaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+    const response = await fetch(
+      `${baseUrl}/api/incidents/${baseline.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "allow",
+          pendingDecision: awaiting.remediation.pendingDecision,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(response.status).toBe(202);
+    const failed = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "VALIDATION_FAILED",
+    );
+    expect(failed.remediation).toMatchObject({
+      error: "Approved apply_policy_patch produced no durable application",
+      state: "VALIDATION_FAILED",
+    });
+    const persistedPolicy = createSqliteCapabilityPolicy(
+      join(runtimeDirectory, "blackbox.sqlite"),
+      [`${baseUrl}/api/trusted-destination`],
+    );
+    expect(persistedPolicy.read()).toMatchObject({ version: 1 });
+    persistedPolicy.close();
+  });
+
+  it("reconciles a durable application committed before the Incident checkpoint", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-recovery-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const resolvePolicyAction = vi.fn();
+    const trueForgeRuntime = createFakeBaselineRuntime(
+      baseUrl,
+      async (request) => fakeInvestigationEvidence(request),
+    );
+    trueForgeRuntime.resolvePolicyAction = resolvePolicyAction;
+    trueForgeRuntime.executeReplay = trueForgeRuntime.executeBaseline;
+    trueForgeRuntime.executeControl = trueForgeRuntime.executeBaseline;
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const baseline = await runIncident(baseUrl);
+    const awaiting = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (awaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+    const pending = awaiting.remediation.pendingDecision;
+    const persistedPolicy = createSqliteCapabilityPolicy(
+      join(runtimeDirectory, "blackbox.sqlite"),
+      [`${baseUrl}/api/trusted-destination`],
+    );
+    persistedPolicy.applyPatch(
+      {
+        destinationAllowlist:
+          awaiting.remediation.dryRun.candidate.rules.send_external_message
+            .destinations,
+        expectedBaseHash: awaiting.remediation.dryRun.base.hash,
+        expectedBaseVersion: awaiting.remediation.dryRun.base.version,
+      },
+      {
+        actionId: pending.actionId,
+        callId: pending.callId,
+        decidedAt: "2026-08-28T12:00:00.000Z",
+        sessionId: pending.sessionId,
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+      },
+    );
+    persistedPolicy.close();
+
+    const response = await fetch(
+      `${baseUrl}/api/incidents/${baseline.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({ decision: "allow", pendingDecision: pending }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(response.status).toBe(202);
+    const verified = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "VERIFIED",
+    );
+    expect(verified.remediation).toMatchObject({
+      lifecycle: [
+        { state: "DRAFTED" },
+        { state: "DRY_RUN_PASSED" },
+        { state: "AWAITING_APPROVAL" },
+        { state: "APPLIED" },
+        { state: "VERIFYING" },
+        { state: "VERIFIED" },
+      ],
+      state: "VERIFIED",
+    });
+    expect(resolvePolicyAction).not.toHaveBeenCalled();
+  });
+
+  it("serializes Baseline Runs and Remediation decisions in both directions", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-serial-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    let releaseBaseline = (): void => undefined;
+    let releaseDecision = (): void => undefined;
+    const baselineGate = new Promise<void>((resolve) => {
+      releaseBaseline = resolve;
+    });
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    const trueForgeRuntime = createFakeBaselineRuntime(
+      baseUrl,
+      async (request) => fakeInvestigationEvidence(request),
+    );
+    trueForgeRuntime.resolvePolicyAction = async (request) => {
+      await decisionGate;
+      return {
+        decision: request.decision,
+        pendingDecision: request.pendingDecision,
+        resumedTurnId: "turn-denial",
+        status: "done",
+      };
+    };
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const first = await runIncident(baseUrl);
+    const firstAwaiting = await waitForIncidentState(
+      baseUrl,
+      first.manifest.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (firstAwaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("First Incident is not awaiting approval");
+    }
+    const executeBaseline = trueForgeRuntime.executeBaseline;
+    trueForgeRuntime.executeBaseline = async (request) => {
+      await baselineGate;
+      return executeBaseline(request);
+    };
+    const secondStart = await fetch(`${baseUrl}/api/incidents`, {
+      method: "POST",
+    });
+    expect(secondStart.status).toBe(202);
+    const second = z
+      .object({ incidentId: z.string(), runId: z.string() })
+      .parse(await secondStart.json());
+    const blockedDecision = await fetch(
+      `${baseUrl}/api/incidents/${first.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "deny",
+          pendingDecision: firstAwaiting.remediation.pendingDecision,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(blockedDecision.status).toBe(409);
+    releaseBaseline();
+
+    const secondAwaiting = await waitForIncidentState(
+      baseUrl,
+      second.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (secondAwaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("Second Incident is not awaiting approval");
+    }
+    const denial = await fetch(
+      `${baseUrl}/api/incidents/${second.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "deny",
+          pendingDecision: secondAwaiting.remediation.pendingDecision,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(denial.status).toBe(202);
+    const blockedStart = await fetch(`${baseUrl}/api/incidents`, {
+      method: "POST",
+    });
+    expect(blockedStart.status).toBe(409);
+    releaseDecision();
+    await waitForIncidentState(baseUrl, second.incidentId, "DENIED");
+  });
+
+  it("retains the restrictive policy and withholds VERIFIED after replay failure", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-failed-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const trueForgeRuntime = createApplyingRemediationRuntime(baseUrl);
     trueForgeRuntime.executeReplay = async () => {
       throw new Error("Replay infrastructure failed");
     };
@@ -531,6 +795,63 @@ describe("Baseline Run product HTTP API", () => {
     persistedPolicy.close();
   });
 });
+
+function createApplyingRemediationRuntime(baseUrl: string): TrueForgeRuntime {
+  let proposal: InvestigationProposal | undefined;
+  const runtime = createFakeBaselineRuntime(baseUrl, async (request) => {
+    const evidence = fakeInvestigationEvidence(request);
+    proposal = evidence.pendingAction.proposal;
+    return evidence;
+  });
+  runtime.resolvePolicyAction = async (request) => {
+    if (request.decision === "allow") {
+      if (proposal === undefined) {
+        throw new Error("Fake runtime has no pending Policy Patch");
+      }
+      await applyPolicyPatchViaMcp(
+        baseUrl,
+        request.mcpAuthorization,
+        proposal,
+      );
+    }
+    return {
+      decision: request.decision,
+      pendingDecision: request.pendingDecision,
+      resumedTurnId: "turn-approval",
+      status: "done",
+    };
+  };
+  return runtime;
+}
+
+async function applyPolicyPatchViaMcp(
+  baseUrl: string,
+  mcpAuthorization: string,
+  proposal: InvestigationProposal,
+): Promise<void> {
+  const client = new Client({
+    name: "fake-trueforge-investigator",
+    version: "0.1.4",
+  });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${baseUrl}/investigator-mcp`), {
+      requestInit: {
+        headers: { Authorization: `Bearer ${mcpAuthorization}` },
+      },
+    }),
+  );
+  try {
+    const result = await client.callTool({
+      arguments: proposal,
+      name: "apply_policy_patch",
+    });
+    if (result.isError) {
+      throw new Error("Fake TrueForge Policy Patch call failed");
+    }
+  } finally {
+    await client.close();
+  }
+}
 
 function createFakeBaselineRuntime(
   baseUrl: string,

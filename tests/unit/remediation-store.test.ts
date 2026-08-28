@@ -1,3 +1,8 @@
+import { DatabaseSync } from "node:sqlite";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { createBaselineCapabilityPolicy } from "../../src/policy/capability-policy.js";
@@ -32,7 +37,11 @@ describe("durable remediation failures", () => {
 
     expect(store.read("incident-1")?.remediation).toMatchObject({
       dryRun,
-      lifecycle: [{ state: "DRAFTED" }, { state: "DRY_RUN_PASSED" }],
+      lifecycle: [
+        { state: "DRAFTED" },
+        { state: "DRY_RUN_PASSED" },
+        { state: "VALIDATION_FAILED" },
+      ],
       pendingDecision: {
         actionId: "action-1",
         callId: "call-1",
@@ -77,6 +86,67 @@ describe("durable remediation failures", () => {
     });
     expect(store.readMcpAuthorization("incident-1")).toBe("run-capability");
     store.close();
+  });
+
+  it("migrates a legacy pending action without thread identity to a non-resumable failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "blackbox-remediation-"));
+    const databasePath = join(directory, "blackbox.sqlite");
+    try {
+      const trustedDestination = "https://trusted.example/messages";
+      const policy = createBaselineCapabilityPolicy([trustedDestination]);
+      const base = policy.read();
+      const dryRun = policy.dryRunPatch({
+        destinationAllowlist: [trustedDestination],
+        expectedBaseHash: base.hash,
+        expectedBaseVersion: base.version,
+      });
+      const evidence = awaitingApprovalEvidence();
+      const { threadId: _threadId, ...legacyPendingDecision } =
+        evidence.pendingDecision;
+      const database = new DatabaseSync(databasePath);
+      database.exec(`
+        CREATE TABLE incidents (
+          incident_id TEXT PRIMARY KEY,
+          record_json TEXT NOT NULL
+        );
+      `);
+      database
+        .prepare(
+          "INSERT INTO incidents (incident_id, record_json) VALUES (?, ?)",
+        )
+        .run(
+          "incident-legacy",
+          JSON.stringify({
+            baseline: {
+              evidenceBundleHash: "a".repeat(64),
+              runId: "run-legacy",
+              verdict: "VULNERABLE",
+            },
+            incidentId: "incident-legacy",
+            remediation: {
+              ...evidence,
+              dryRun,
+              pendingDecision: legacyPendingDecision,
+              state: "AWAITING_APPROVAL",
+            },
+          }),
+        );
+      database.close();
+
+      const store = new SqliteRemediationStore(databasePath);
+      expect(store.read("incident-legacy")).toMatchObject({
+        incidentStatus: "OPEN",
+        remediation: {
+          error:
+            "Persisted pending action predates required thread identity and cannot be safely resumed",
+          lifecycle: [{ state: "VALIDATION_FAILED" }],
+          state: "VALIDATION_FAILED",
+        },
+      });
+      store.close();
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 });
 

@@ -403,7 +403,11 @@ describe("Evidence Ledger", () => {
       baselineRunId: MANIFEST.runId,
       canarySecret: "BLACKBOX-CANARY-control-1",
       controlMessage: "BLACKBOX-CONTROL-RESPONSE-control-1",
-      fingerprints: { ...MANIFEST.fingerprints, policy: "policy-v2" },
+      fingerprints: {
+        ...MANIFEST.fingerprints,
+        policy: "policy-v2",
+        scenario: "control-scenario-fingerprint",
+      },
       kind: "control",
       runId: "control-1",
       trustedDestination: "https://trusted.example/messages",

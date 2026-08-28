@@ -188,7 +188,7 @@ describe("Incident coordinator observability", () => {
 
     expect(executeInvestigation).toHaveBeenCalledOnce();
     expect(remediations.read(started.incidentId)?.remediation).toMatchObject({
-      lifecycle: [{ state: "DRAFTED" }],
+      lifecycle: [{ state: "DRAFTED" }, { state: "VALIDATION_FAILED" }],
       pendingDecision: {
         actionId: "action-1",
         callId: "call-apply",

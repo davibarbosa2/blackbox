@@ -51,6 +51,19 @@ const dryRunPassedSchema = z.object({
   state: z.literal("DRY_RUN_PASSED"),
 });
 
+const replayVerificationSchema = z.object({
+  bundleHash: z.string().length(64),
+  complete: z.boolean(),
+  runId: z.string(),
+  verdict: z.enum(["PROTECTED", "INCONCLUSIVE"]),
+});
+const controlVerificationSchema = z.object({
+  bundleHash: z.string().length(64),
+  complete: z.boolean(),
+  controlResult: z.enum(["PASSED", "INCONCLUSIVE"]),
+  runId: z.string(),
+});
+
 const validationFailedSchema = z.object({
   decision: z.lazy(() => remediationDecisionEvidenceSchema).optional(),
   dryRun: policyPatchDryRunSchema.optional(),
@@ -60,22 +73,8 @@ const validationFailedSchema = z.object({
   policyReadback: policyReadSchema.optional(),
   verification: z
     .object({
-      control: z
-        .object({
-          bundleHash: z.string().length(64),
-          complete: z.boolean(),
-          controlResult: z.enum(["PASSED", "INCONCLUSIVE"]),
-          runId: z.string(),
-        })
-        .optional(),
-      replay: z
-        .object({
-          bundleHash: z.string().length(64),
-          complete: z.boolean(),
-          runId: z.string(),
-          verdict: z.enum(["PROTECTED", "INCONCLUSIVE"]),
-        })
-        .optional(),
+      control: controlVerificationSchema.optional(),
+      replay: replayVerificationSchema.optional(),
     })
     .optional(),
   state: z.literal("VALIDATION_FAILED"),
@@ -137,19 +136,6 @@ const appliedSchema = z.object({
   state: z.literal("APPLIED"),
 });
 
-const replayVerificationSchema = z.object({
-  bundleHash: z.string().length(64),
-  complete: z.boolean(),
-  runId: z.string(),
-  verdict: z.enum(["PROTECTED", "INCONCLUSIVE"]),
-});
-const controlVerificationSchema = z.object({
-  bundleHash: z.string().length(64),
-  complete: z.boolean(),
-  controlResult: z.enum(["PASSED", "INCONCLUSIVE"]),
-  runId: z.string(),
-});
-
 const verifyingSchema = appliedSchema.extend({
   state: z.literal("VERIFYING"),
   verification: z.object({
@@ -200,6 +186,24 @@ export type RemediationDecisionEvidence = z.infer<
 >;
 
 const rowSchema = z.object({ record_json: z.string() });
+const migrationRowSchema = z.object({
+  incident_id: z.string(),
+  record_json: z.string(),
+});
+const legacyIncidentSchema = z.object({
+  baseline: baselineSchema,
+  incidentId: z.string(),
+  incidentStatus: z.enum(["OPEN", "RESOLVED"]).optional(),
+  remediation: z
+    .object({
+      lifecycle: lifecycleSchema.optional(),
+      pendingDecision: z.unknown().optional(),
+      state: z.string(),
+    })
+    .passthrough(),
+});
+const remediationStoreVersionSchema = z.object({ schema_version: z.number() });
+const REMEDIATION_STORE_VERSION = 2;
 
 export class SqliteRemediationStore {
   readonly #database: DatabaseSync;
@@ -216,7 +220,12 @@ export class SqliteRemediationStore {
         incident_id TEXT PRIMARY KEY REFERENCES incidents(incident_id),
         mcp_authorization TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS remediation_schema_metadata (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        schema_version INTEGER NOT NULL
+      );
     `);
+    migrateIncidentRecords(this.#database);
   }
 
   close(): void {
@@ -456,7 +465,7 @@ export class SqliteRemediationStore {
         : undefined;
     const failure: z.infer<typeof validationFailedSchema> = {
       error,
-      lifecycle: current.remediation.lifecycle,
+      lifecycle: appendLifecycle(current, "VALIDATION_FAILED"),
       state: "VALIDATION_FAILED",
     };
     if (dryRun !== undefined) failure.dryRun = dryRun;
@@ -507,6 +516,108 @@ export class SqliteRemediationStore {
       .run(JSON.stringify(incident), incident.incidentId);
     return incident;
   }
+}
+
+function migrateIncidentRecords(database: DatabaseSync): void {
+  const version = remediationStoreVersionSchema.safeParse(
+    database
+      .prepare(
+        "SELECT schema_version FROM remediation_schema_metadata WHERE singleton = 1",
+      )
+      .get(),
+  );
+  if (version.success && version.data.schema_version >= REMEDIATION_STORE_VERSION) {
+    return;
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const rows = database
+      .prepare("SELECT incident_id, record_json FROM incidents")
+      .all();
+    for (const sourceRow of rows) {
+      const row = migrationRowSchema.parse(sourceRow);
+      const incident = decodeLegacyIncident(
+        legacyIncidentSchema.parse(JSON.parse(row.record_json)),
+      );
+      database
+        .prepare("UPDATE incidents SET record_json = ? WHERE incident_id = ?")
+        .run(JSON.stringify(incident), row.incident_id);
+    }
+    database
+      .prepare(
+        `INSERT INTO remediation_schema_metadata (singleton, schema_version)
+         VALUES (1, ?)
+         ON CONFLICT(singleton) DO UPDATE SET schema_version = excluded.schema_version`,
+      )
+      .run(REMEDIATION_STORE_VERSION);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function decodeLegacyIncident(
+  legacy: z.infer<typeof legacyIncidentSchema>,
+): DurableIncidentRead {
+  const legacyLifecycle = legacy.remediation.lifecycle ?? [];
+  const lifecycle =
+    legacy.remediation.state === "VALIDATION_FAILED" &&
+    legacyLifecycle.at(-1)?.state !== "VALIDATION_FAILED"
+      ? [
+          ...legacyLifecycle,
+          {
+            occurredAt: new Date().toISOString(),
+            state: "VALIDATION_FAILED" as const,
+          },
+        ]
+      : legacyLifecycle;
+  const normalized = {
+    ...legacy,
+    incidentStatus:
+      legacy.incidentStatus ??
+      (legacy.remediation.state === "VERIFIED" ? "RESOLVED" : "OPEN"),
+    remediation: { ...legacy.remediation, lifecycle },
+  };
+  const current = durableIncidentReadSchema.safeParse(normalized);
+  if (current.success) return current.data;
+
+  const pending = z
+    .object({
+      actionId: z.string(),
+      callId: z.string(),
+      sessionId: z.string(),
+      threadId: z.string().optional(),
+      toolName: z.literal("apply_policy_patch"),
+      turnId: z.string(),
+    })
+    .safeParse(legacy.remediation.pendingDecision);
+  if (pending.success && pending.data.threadId === undefined) {
+    const dryRun = policyPatchDryRunSchema.safeParse(
+      legacy.remediation.dryRun,
+    );
+    const failure: z.infer<typeof validationFailedSchema> = {
+      error:
+        "Persisted pending action predates required thread identity and cannot be safely resumed",
+      lifecycle: [
+        ...legacyLifecycle,
+        {
+          occurredAt: new Date().toISOString(),
+          state: "VALIDATION_FAILED",
+        },
+      ],
+      state: "VALIDATION_FAILED",
+    };
+    if (dryRun.success) failure.dryRun = dryRun.data;
+    return durableIncidentReadSchema.parse({
+      baseline: legacy.baseline,
+      incidentId: legacy.incidentId,
+      incidentStatus: "OPEN",
+      remediation: failure,
+    });
+  }
+  throw current.error;
 }
 
 function appendLifecycle(

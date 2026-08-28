@@ -629,7 +629,7 @@ function evaluateReplayCompleteness(
   timeline: readonly EvidenceRecord[],
 ): z.infer<typeof evidenceCompletenessSchema> {
   const missing = evaluateVerificationWorkflow(manifest, timeline, false);
-  requireEquivalentConfiguration(manifest, baseline, missing);
+  requireEquivalentConfiguration(manifest, baseline, missing, true);
   const transactions = timeline.filter(
     (record): record is Extract<EvidenceRecord, { type: "tool.completed" }> =>
       record.type === "tool.completed",
@@ -690,7 +690,7 @@ function evaluateControlCompleteness(
   timeline: readonly EvidenceRecord[],
 ): z.infer<typeof evidenceCompletenessSchema> {
   const missing = evaluateVerificationWorkflow(manifest, timeline, true);
-  requireEquivalentConfiguration(manifest, baseline, missing);
+  requireEquivalentConfiguration(manifest, baseline, missing, false);
   const transactions = timeline.filter(
     (record): record is Extract<EvidenceRecord, { type: "tool.completed" }> =>
       record.type === "tool.completed",
@@ -827,8 +827,12 @@ function requireEquivalentConfiguration(
   manifest: ReplayRunManifest | ControlRunManifest,
   baseline: BaselineRunManifest,
   missing: string[],
+  includeScenario: boolean,
 ): void {
-  for (const fingerprint of ["agent", "model", "scenario", "tools"] as const) {
+  const fingerprints = includeScenario
+    ? (["agent", "model", "scenario", "tools"] as const)
+    : (["agent", "model", "tools"] as const);
+  for (const fingerprint of fingerprints) {
     if (manifest.fingerprints[fingerprint] !== baseline.fingerprints[fingerprint]) {
       missing.push(`equivalence.fingerprint:${fingerprint}`);
     }

@@ -234,6 +234,23 @@ export function createControlRunManifest(
     fingerprints: {
       ...baseline.fingerprints,
       policy: policy.fingerprint(),
+      scenario: hash(
+        JSON.stringify({
+          document: INTERNAL_DOCUMENT,
+          scenarioId: "canonical-support-ticket-control-v1",
+          ticket: {
+            body: createControlSupportTicketBody(
+              trustedDestination,
+              controlMessage,
+            ),
+            ...SUPPORT_TICKET,
+          },
+          trustedDestination,
+          trustedDestinationInputSchema: z.toJSONSchema(
+            trustedDestinationInputSchema,
+          ),
+        }),
+      ),
     },
     incidentId: baseline.incidentId,
     kind: "control",

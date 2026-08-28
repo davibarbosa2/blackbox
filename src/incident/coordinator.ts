@@ -16,6 +16,7 @@ import type {
   CapabilityPolicy,
   PolicyApplicationResult,
   PolicyApprovalEvidence,
+  PolicyRead,
 } from "../policy/capability-policy.js";
 import {
   type AwaitingApprovalRemediation,
@@ -121,6 +122,14 @@ export class IncidentCoordinator {
     if (this.#active !== undefined) {
       return { activeRunId: this.#active.runId, started: false };
     }
+    if (this.#activeDecision !== undefined) {
+      const incident = this.#remediations.read(this.#activeDecision.incidentId);
+      return {
+        activeRunId:
+          incident?.baseline.runId ?? this.#activeDecision.incidentId,
+        started: false,
+      };
+    }
 
     const incidentId = randomUUID();
     const runId = randomUUID();
@@ -195,6 +204,9 @@ export class IncidentCoordinator {
     if (this.#activeDecision !== undefined) {
       throw new Error("A Remediation decision is already running");
     }
+    if (this.#active !== undefined) {
+      throw new Error("A Baseline Run is already running");
+    }
 
     const decidedAt = new Date().toISOString();
     const decisionEvidence = {
@@ -202,11 +214,17 @@ export class IncidentCoordinator {
       decidedAt,
       decision: request.decision,
     };
+    const existingApplication =
+      request.decision === "allow"
+        ? this.#policy.readApplication(request.pendingDecision.actionId)
+        : undefined;
     if (
       request.decision === "allow" &&
-      (this.#policy.fingerprint() !== incident.remediation.dryRun.base.hash ||
-        this.#policy.read().version !==
-          incident.remediation.dryRun.base.version)
+      existingApplication === undefined &&
+      !policyMatchesRead(
+        this.#policy.read(),
+        incident.remediation.dryRun.base,
+      )
     ) {
       this.#remediations.stale(
         incidentId,
@@ -219,12 +237,23 @@ export class IncidentCoordinator {
     const controller = new AbortController();
     const mcpAuthorization =
       this.#remediations.readMcpAuthorization(incidentId);
-    const completion = this.#resolveDecision(
-      incidentId,
-      request,
-      decidedAt,
-      mcpAuthorization,
-      controller.signal,
+    const completion = (
+      existingApplication === undefined
+        ? this.#resolveDecision(
+            incidentId,
+            request,
+            decidedAt,
+            mcpAuthorization,
+            controller.signal,
+          )
+        : this.#resumeAppliedDecision(
+            incidentId,
+            incident.remediation,
+            request.pendingDecision,
+            existingApplication,
+            mcpAuthorization,
+            controller.signal,
+          )
     ).finally(() => {
       if (this.#activeDecision?.incidentId === incidentId) {
         this.#activeDecision = undefined;
@@ -336,9 +365,29 @@ export class IncidentCoordinator {
         );
         return;
       }
-      const application =
-        this.#policy.readApplication(request.pendingDecision.actionId) ??
-        this.applyApprovedPolicyPatch(proposal);
+      const application = this.#policy.readApplication(
+        request.pendingDecision.actionId,
+      );
+      if (application === undefined) {
+        const readback = this.#policy.read();
+        if (
+          !policyMatchesRead(readback, incident.remediation.dryRun.base)
+        ) {
+          this.#remediations.stale(
+            incidentId,
+            {
+              ...request.pendingDecision,
+              decidedAt,
+              decision: "allow",
+            },
+            readback,
+          );
+          return;
+        }
+        throw new Error(
+          "Approved apply_policy_patch produced no durable application",
+        );
+      }
       if (application.status === "STALE") {
         this.#remediations.stale(
           incidentId,
@@ -351,14 +400,12 @@ export class IncidentCoordinator {
         );
         return;
       }
-      if (
-        application.readback.hash !==
-          incident.remediation.dryRun.candidateHash ||
-        application.readback.version !==
-          incident.remediation.dryRun.candidate.version
-      ) {
-        throw new Error("Applied Capability Policy readback did not match dry-run");
-      }
+      const readback = validateAppliedPolicy(
+        this.#policy,
+        application,
+        approval,
+        incident.remediation,
+      );
       this.#remediations.applied(
         incidentId,
         {
@@ -366,7 +413,7 @@ export class IncidentCoordinator {
           decidedAt,
           decision: "allow",
         },
-        application.readback,
+        readback,
       );
       this.#remediations.verifying(incidentId);
       await this.#verifyRemediation(incidentId, mcpAuthorization, signal);
@@ -381,15 +428,25 @@ export class IncidentCoordinator {
         applied.status !== "STALE" &&
         current?.remediation.state === "AWAITING_APPROVAL"
       ) {
-        this.#remediations.applied(
-          incidentId,
-          {
-            ...request.pendingDecision,
-            decidedAt,
-            decision: "allow",
-          },
-          applied.readback,
-        );
+        try {
+          const readback = validateAppliedPolicy(
+            this.#policy,
+            applied,
+            approval,
+            current.remediation,
+          );
+          this.#remediations.applied(
+            incidentId,
+            {
+              ...request.pendingDecision,
+              decidedAt: applied.approval.decidedAt,
+              decision: "allow",
+            },
+            readback,
+          );
+        } catch {
+          // The original failure remains authoritative when reconciliation fails.
+        }
       }
       this.#remediations.validationFailed(
         incidentId,
@@ -402,6 +459,53 @@ export class IncidentCoordinator {
       if (this.#pendingApplication?.incidentId === incidentId) {
         this.#pendingApplication = undefined;
       }
+    }
+  }
+
+  async #resumeAppliedDecision(
+    incidentId: string,
+    remediation: AwaitingApprovalRemediation,
+    pendingDecision: RemediationDecisionRequest["pendingDecision"],
+    application: PolicyApplicationResult,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      if (application.status === "STALE") {
+        throw new Error("Persisted Policy application cannot be STALE");
+      }
+      const readback = validateAppliedPolicy(
+        this.#policy,
+        application,
+        {
+          actionId: pendingDecision.actionId,
+          callId: pendingDecision.callId,
+          decidedAt: application.approval.decidedAt,
+          sessionId: pendingDecision.sessionId,
+          threadId: pendingDecision.threadId,
+          turnId: pendingDecision.turnId,
+        },
+        remediation,
+      );
+      this.#remediations.applied(
+        incidentId,
+        {
+          ...pendingDecision,
+          decidedAt: application.approval.decidedAt,
+          decision: "allow",
+        },
+        readback,
+      );
+      this.#remediations.verifying(incidentId);
+      await this.#verifyRemediation(incidentId, mcpAuthorization, signal);
+    } catch (error) {
+      this.#remediations.validationFailed(
+        incidentId,
+        error instanceof Error
+          ? error.message
+          : "Persisted Policy application recovery failed",
+        pendingDecision,
+      );
     }
   }
 
@@ -751,6 +855,33 @@ function proposalFromRemediation(
       expectedBaseVersion: remediation.dryRun.base.version,
     },
   });
+}
+
+function validateAppliedPolicy(
+  policy: CapabilityPolicy,
+  application: Exclude<PolicyApplicationResult, { status: "STALE" }>,
+  approval: PolicyApprovalEvidence,
+  remediation: AwaitingApprovalRemediation,
+): PolicyRead {
+  if (!isDeepStrictEqual(application.approval, approval)) {
+    throw new Error("Persisted Policy application approval evidence mismatched");
+  }
+  const readback = policy.read();
+  if (
+    !isDeepStrictEqual(readback, application.readback) ||
+    readback.hash !== remediation.dryRun.candidateHash ||
+    readback.version !== remediation.dryRun.candidate.version
+  ) {
+    throw new Error("Applied Capability Policy readback did not match dry-run");
+  }
+  return readback;
+}
+
+function policyMatchesRead(
+  policy: PolicyRead,
+  expected: { hash: string; version: number },
+): boolean {
+  return policy.hash === expected.hash && policy.version === expected.version;
 }
 
 function replayReference(replay: ReplayEvidenceBundle) {
