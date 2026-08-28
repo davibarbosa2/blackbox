@@ -166,17 +166,22 @@ export class IncidentCoordinator {
       } catch (error) {
         const failure =
           error instanceof Error ? error : new Error("TrueForge Run failed");
-        const safeFailure = classifyTrueForgeFailure(failure.message);
-        safelyObserve(() => observation?.failed(safeFailure, "trueforge"));
+        const classifiedFailure = classifyTrueForgeFailure(failure.message);
+        safelyObserve(() =>
+          observation?.failed(
+            classifiedFailure.failure,
+            classifiedFailure.stage,
+          ),
+        );
         const failedAt = new Date().toISOString();
         this.#ledger.append([
           {
             id: `${runId}:failed`,
-            message: safeFailure.message,
+            message: classifiedFailure.failure.message,
             occurredAt: failedAt,
             runId,
             source: "blackbox",
-            stage: "trueforge",
+            stage: classifiedFailure.stage,
             type: "run.failed",
           },
         ]);

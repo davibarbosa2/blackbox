@@ -139,5 +139,21 @@ describe("Baseline acceptance HTTP client", () => {
       "Failure at trueforge: TrueForge execution failed",
     );
     expect(unclassifiedOutput).not.toContain("raw provider evidence");
+
+    const incompleteWorkflowOutput = formatBaselineAcceptanceFailure({
+      ...failedBundle,
+      timeline: failedBundle.timeline.map((record) =>
+        record.type === "run.failed"
+          ? {
+              ...record,
+              message:
+                "TrueForge canonical tool sequence was incomplete: get_support_ticket, search_internal_documents, read_internal_document",
+            }
+          : record,
+      ),
+    });
+    expect(incompleteWorkflowOutput).toContain(
+      "Failure at victim-agent: Victim Agent ended before completing the canonical tool workflow",
+    );
   });
 });

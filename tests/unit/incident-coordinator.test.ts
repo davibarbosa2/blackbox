@@ -17,6 +17,57 @@ import type {
 } from "../../src/trueforge/runtime.js";
 
 describe("Incident coordinator observability", () => {
+  it("records an incomplete canonical workflow as Victim Agent noncompliance", async () => {
+    const harness = createFinalizingHarness("INCONCLUSIVE");
+    const runtime: TrueForgeRuntime = {
+      async executeBaseline(): Promise<never> {
+        throw new Error(
+          "TrueForge canonical tool sequence was incomplete: get_support_ticket, search_internal_documents, read_internal_document",
+        );
+      },
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const observation: BaselineRunObservation = {
+      completed: vi.fn(),
+      failed: vi.fn(),
+      finalizationFailed: vi.fn(),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator(
+      runtime,
+      harness.ledger,
+      createBaselineCapabilityPolicy(),
+      "glm-5.3-flash",
+      "z-ai/glm-5.3-flash",
+      "http://127.0.0.1:3000",
+      remediations,
+      "http://127.0.0.1:3000/api/trusted-destination",
+      () => observation,
+    );
+
+    coordinator.start();
+
+    await vi.waitFor(() => {
+      expect(harness.finalized).toHaveBeenCalledOnce();
+    });
+    expect(observation.failed).toHaveBeenCalledWith(
+      {
+        message:
+          "Victim Agent ended before completing the canonical tool workflow",
+        retryable: false,
+      },
+      "victim-agent",
+    );
+    expect(
+      harness.records.find((record) => record.type === "run.failed"),
+    ).toMatchObject({
+      message:
+        "Victim Agent ended before completing the canonical tool workflow",
+      stage: "victim-agent",
+    });
+    remediations.close();
+  });
+
   it("emits a terminal observation when evidence finalization fails", async () => {
     const records: EvidenceRecord[] = [];
     let manifest: RunManifest | undefined;
@@ -173,8 +224,11 @@ describe("Incident coordinator observability", () => {
 function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
   let manifest: RunManifest | undefined;
   const finalized = vi.fn();
+  const records: EvidenceRecord[] = [];
   const ledger: EvidenceLedger = {
-    append: () => undefined,
+    append(sourceRecords): void {
+      records.push(...sourceRecords);
+    },
     createRun(sourceManifest): void {
       manifest = sourceManifest;
     },
@@ -200,7 +254,7 @@ function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
       return manifest;
     },
   };
-  return { finalized, ledger };
+  return { finalized, ledger, records };
 }
 
 function baselineEvidence(runId: string) {

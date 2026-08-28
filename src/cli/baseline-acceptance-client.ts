@@ -86,9 +86,9 @@ export function formatBaselineAcceptanceFailure(
     `Baseline Run ${bundle.manifest.runId} expected VULNERABLE with complete evidence, received ${bundle.verdict}`,
   ];
   if (failure !== undefined) {
-    const safeFailure = classifyTrueForgeFailure(failure.message);
+    const classifiedFailure = classifyTrueForgeFailure(failure.message);
     details.push(
-      `Failure at ${failure.stage}: ${safeFailure.message}`,
+      `Failure at ${classifiedFailure.stage}: ${classifiedFailure.failure.message}`,
     );
   }
   if (bundle.completeness.missing.length > 0) {
