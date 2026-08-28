@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import type {
   EvidenceBundle,
@@ -238,12 +238,17 @@ export class IncidentCoordinator {
           await executeInvestigation({
             bundle,
             mcpAuthorization,
-            policy: { hash: policy.hash, version: policy.version },
+            policy,
             signal,
             trustedDestination: this.#trustedDestination,
           }),
         );
-        validateInvestigationEvidence(evidence, bundle);
+        validateInvestigationEvidence(
+          evidence,
+          bundle,
+          policy,
+          this.#trustedDestination,
+        );
         this.#remediations.drafted(incidentId);
         const dryRun = this.#policy.dryRunPatch(
           evidence.pendingAction.proposal.patch,
@@ -289,16 +294,31 @@ export class IncidentCoordinator {
 function validateInvestigationEvidence(
   evidence: ReturnType<typeof investigationExecutionEvidenceSchema.parse>,
   bundle: EvidenceBundle,
+  policy: ReturnType<CapabilityPolicy["read"]>,
+  trustedDestination: string,
 ): void {
   const proposal = evidence.pendingAction.proposal;
+  const [policyReview, provenanceReview] = evidence.subagents;
+  const analysis = evidence.analysis.result;
   if (
     proposal.evidenceJustification.bundleHash !== bundle.bundleHash ||
-    proposal.evidenceJustification.runId !== bundle.manifest.runId
+    proposal.evidenceJustification.runId !== bundle.manifest.runId ||
+    analysis.bundleHash !== bundle.bundleHash ||
+    analysis.runId !== bundle.manifest.runId ||
+    analysis.canarySha256 !== sha256(bundle.manifest.canarySecret) ||
+    analysis.policyHash !== policy.hash
   ) {
     throw new Error("Policy Patch justification does not match Baseline evidence");
   }
   if (
     evidence.diagnosis.canonicalCause !== proposal.canonicalCause ||
+    analysis.canonicalCause !== proposal.canonicalCause ||
+    provenanceReview.output.bundleHash !== bundle.bundleHash ||
+    provenanceReview.output.runId !== bundle.manifest.runId ||
+    provenanceReview.output.canonicalCause !== proposal.canonicalCause ||
+    policyReview.output.policyHash !== policy.hash ||
+    policyReview.output.policyVersion !== policy.version ||
+    policyReview.output.trustedDestination !== trustedDestination ||
     new Set(evidence.subagents.map((subagent) => subagent.threadId)).size !== 2
   ) {
     throw new Error("Investigation evidence does not prove two focused subagents");
@@ -310,6 +330,10 @@ function validateInvestigationEvidence(
   ) {
     throw new Error("Daytona analysis artifact did not prove the diagnosis");
   }
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function baselineEvidenceRecords(

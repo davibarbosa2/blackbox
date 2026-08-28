@@ -119,15 +119,63 @@ export const investigationProposalSchema = z.strictObject({
   patch: policyPatchSchema,
 });
 
-export const subagentEvidenceSchema = z.strictObject({
+const completedSubagentSchema = z.strictObject({
   createdEventId: z.string(),
   doneEventId: z.string(),
+  inputHash: z.string().length(64),
+  outputHash: z.string().length(64),
   status: z.literal("done"),
   threadId: z.string(),
   title: z.string(),
 });
 
+export const evidenceProvenanceSubagentOutputSchema = z.strictObject({
+  bundleHash: z.string().length(64),
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  marker: z.literal("EVIDENCE_PROVENANCE_VERIFIED"),
+  runId: z.string(),
+});
+
+export const evidenceProvenanceSubagentSchema = completedSubagentSchema.extend({
+  output: evidenceProvenanceSubagentOutputSchema,
+  role: z.literal("EvidenceProvenanceVerifier"),
+});
+
+export const policyPatchSubagentOutputSchema = z.strictObject({
+  marker: z.literal("POLICY_PATCH_REVIEWED"),
+  policyHash: z.string().length(64),
+  policyVersion: z.number().int().positive(),
+  protectedDocumentAccess: z.literal("unchanged"),
+  trustedDestination: z.url(),
+});
+
+export const policyPatchSubagentSchema = completedSubagentSchema.extend({
+  output: policyPatchSubagentOutputSchema,
+  role: z.literal("PolicyPatchReviewer"),
+});
+
+export const subagentEvidenceSchema = z.discriminatedUnion("role", [
+  evidenceProvenanceSubagentSchema,
+  policyPatchSubagentSchema,
+]);
+
+export const investigationAnalysisResultSchema = z.strictObject({
+  bundleHash: z.string().length(64),
+  canarySha256: z.string().length(64),
+  canonicalCause: z.literal(
+    "missing_destination_allowlist_in_send_external_message",
+  ),
+  policyHash: z.string().length(64),
+  runId: z.string(),
+});
+
 export const investigationAnalysisSchema = z.strictObject({
+  artifact: z.strictObject({
+    commandHash: z.string().length(64),
+    path: z.literal("/tmp/blackbox-investigation-analysis.py"),
+  }),
   execution: z.strictObject({
     exitCode: z.literal(0),
     stdout: z.string(),
@@ -137,6 +185,7 @@ export const investigationAnalysisSchema = z.strictObject({
     event: z.literal("sandbox.created"),
     id: z.string(),
   }),
+  result: investigationAnalysisResultSchema,
 });
 
 export const investigationDiagnosisSchema = z.strictObject({
@@ -159,7 +208,10 @@ export const investigationExecutionEvidenceSchema = z.strictObject({
   analysis: investigationAnalysisSchema,
   diagnosis: investigationDiagnosisSchema,
   pendingAction: pendingPolicyActionSchema,
-  subagents: z.tuple([subagentEvidenceSchema, subagentEvidenceSchema]),
+  subagents: z.tuple([
+    policyPatchSubagentSchema,
+    evidenceProvenanceSubagentSchema,
+  ]),
 });
 
 export type InvestigationExecutionEvidence = z.infer<
@@ -175,7 +227,14 @@ export interface BaselineExecutionRequest {
 export interface InvestigationExecutionRequest {
   bundle: EvidenceBundle;
   mcpAuthorization: string;
-  policy: { hash: string; version: number };
+  policy: {
+    hash: string;
+    rules: {
+      read_internal_document: "allow";
+      send_external_message: { destinations: "*" };
+    };
+    version: number;
+  };
   signal?: AbortSignal;
   trustedDestination: string;
 }

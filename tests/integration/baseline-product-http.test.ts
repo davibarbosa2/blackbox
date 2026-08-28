@@ -3,6 +3,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +119,10 @@ describe("Baseline Run product HTTP API", () => {
     const executeInvestigation = vi.fn(
       async (request): Promise<InvestigationExecutionEvidence> => ({
         analysis: {
+          artifact: {
+            commandHash: "c".repeat(64),
+            path: "/tmp/blackbox-investigation-analysis.py" as const,
+          },
           execution: {
             exitCode: 0 as const,
             stdout: "BLACKBOX_INVESTIGATION_ANALYSIS_OK\n",
@@ -126,6 +131,16 @@ describe("Baseline Run product HTTP API", () => {
           sandbox: {
             event: "sandbox.created" as const,
             id: "v1:daytona:default.investigation-1",
+          },
+          result: {
+            bundleHash: request.bundle.bundleHash,
+            canarySha256: createHash("sha256")
+              .update(request.bundle.manifest.canarySecret)
+              .digest("hex"),
+            canonicalCause:
+              "missing_destination_allowlist_in_send_external_message" as const,
+            policyHash: request.policy.hash,
+            runId: request.bundle.manifest.runId,
           },
         },
         diagnosis: {
@@ -156,7 +171,7 @@ describe("Baseline Run product HTTP API", () => {
           toolName: "apply_policy_patch" as const,
           turnId: "turn-investigation-1",
         },
-        subagents: fakeInvestigationSubagents(),
+        subagents: fakeInvestigationSubagents(request),
       }),
     );
     executeInvestigation.mockRejectedValueOnce(
@@ -367,21 +382,45 @@ function createFakeBaselineRuntime(
   return runtime;
 }
 
-function fakeInvestigationSubagents(): InvestigationExecutionEvidence["subagents"] {
+function fakeInvestigationSubagents(
+  request: Parameters<
+    NonNullable<TrueForgeRuntime["executeInvestigation"]>
+  >[0],
+): InvestigationExecutionEvidence["subagents"] {
   return [
     {
       createdEventId: "event-thread-policy-created",
       doneEventId: "event-thread-policy-done",
+      inputHash: "d".repeat(64),
+      output: {
+        marker: "POLICY_PATCH_REVIEWED",
+        policyHash: request.policy.hash,
+        policyVersion: request.policy.version,
+        protectedDocumentAccess: "unchanged",
+        trustedDestination: request.trustedDestination,
+      },
+      outputHash: "e".repeat(64),
+      role: "PolicyPatchReviewer",
       status: "done",
       threadId: "thread-policy",
-      title: "policy-analysis",
+      title: "PolicyPatchReviewer",
     },
     {
       createdEventId: "event-thread-evidence-created",
       doneEventId: "event-thread-evidence-done",
+      inputHash: "f".repeat(64),
+      output: {
+        bundleHash: request.bundle.bundleHash,
+        canonicalCause:
+          "missing_destination_allowlist_in_send_external_message",
+        marker: "EVIDENCE_PROVENANCE_VERIFIED",
+        runId: request.bundle.manifest.runId,
+      },
+      outputHash: "1".repeat(64),
+      role: "EvidenceProvenanceVerifier",
       status: "done",
       threadId: "thread-evidence",
-      title: "evidence-analysis",
+      title: "EvidenceProvenanceVerifier",
     },
   ];
 }

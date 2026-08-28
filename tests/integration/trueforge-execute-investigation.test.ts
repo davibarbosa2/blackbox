@@ -7,6 +7,14 @@ import { executeTrueForgeInvestigation } from "../../src/trueforge/execute-inves
 const CREATED_AT = "2026-08-27T20:00:00.000Z";
 const BASE_HASH = "93d054afcb184730a08510550d5ed932dcf78ae88011a76b16423f615df0210c";
 const BUNDLE_HASH = "a".repeat(64);
+const CANARY_SHA256 = "b".repeat(64);
+const ANALYSIS_ARTIFACT_PATH = "/tmp/blackbox-investigation-analysis.py";
+const TRUSTED_DESTINATION =
+  "http://127.0.0.1:3000/api/trusted-destination";
+interface RawEvent {
+  id: string;
+  type: string;
+}
 const PROPOSAL = {
   canonicalCause: "missing_destination_allowlist_in_send_external_message",
   evidenceJustification: {
@@ -16,7 +24,7 @@ const PROPOSAL = {
   },
   patch: {
     destinationAllowlist: [
-      "http://127.0.0.1:3000/api/trusted-destination",
+      TRUSTED_DESTINATION,
     ],
     expectedBaseHash: BASE_HASH,
     expectedBaseVersion: 1,
@@ -39,8 +47,32 @@ const MCP_INITIALIZED = {
   type: "mcp.initialize",
 };
 const THREADS = [
-  threadEvents("policy-analysis", "thread-policy", "call-subagent-policy"),
-  threadEvents("evidence-analysis", "thread-evidence", "call-subagent-evidence"),
+  threadEvents(
+    "PolicyPatchReviewer",
+    "thread-policy",
+    "call-subagent-policy",
+    JSON.stringify({
+      marker: "POLICY_PATCH_REVIEWED",
+      policyHash: BASE_HASH,
+      policyVersion: 1,
+      protectedDocumentAccess: "unchanged",
+      trustedDestination: TRUSTED_DESTINATION,
+    }),
+    "policy",
+  ),
+  threadEvents(
+    "EvidenceProvenanceVerifier",
+    "thread-evidence",
+    "call-subagent-evidence",
+    JSON.stringify({
+      bundleHash: BUNDLE_HASH,
+      canonicalCause:
+        "missing_destination_allowlist_in_send_external_message",
+      marker: "EVIDENCE_PROVENANCE_VERIFIED",
+      runId: "run-1",
+    }),
+    "evidence",
+  ),
 ].flat();
 const SANDBOX_CREATED = {
   created_at: CREATED_AT,
@@ -57,7 +89,26 @@ const EXEC_CALL = {
   thread_id: "main",
   tool_calls: [
     {
-      function: { arguments: "{}", name: "exec" },
+      function: {
+        arguments: JSON.stringify({
+          command: [
+            `cat > ${ANALYSIS_ARTIFACT_PATH} <<'PY'`,
+            'print("BLACKBOX_INVESTIGATION_ANALYSIS_OK")',
+            `print('${JSON.stringify({
+              bundleHash: BUNDLE_HASH,
+              canarySha256: CANARY_SHA256,
+              canonicalCause:
+                "missing_destination_allowlist_in_send_external_message",
+              policyHash: BASE_HASH,
+              runId: "run-1",
+            })}')`,
+            "PY",
+            `python ${ANALYSIS_ARTIFACT_PATH}`,
+          ].join("\n"),
+          intent: "Create and execute the BLACKBOX investigation analysis artifact",
+        }),
+        name: "exec",
+      },
       id: "call-exec",
       tool_info: { name: "exec", type: "truefoundry-system" },
       type: "function",
@@ -69,7 +120,18 @@ const EXEC_RESPONSE = {
   content: JSON.stringify({
     response: {
       exitCode: 0,
-      result: "BLACKBOX_INVESTIGATION_ANALYSIS_OK\n",
+      result: [
+        "BLACKBOX_INVESTIGATION_ANALYSIS_OK",
+        JSON.stringify({
+          bundleHash: BUNDLE_HASH,
+          canarySha256: CANARY_SHA256,
+          canonicalCause:
+            "missing_destination_allowlist_in_send_external_message",
+          policyHash: BASE_HASH,
+          runId: "run-1",
+        }),
+        "",
+      ].join("\n"),
     },
   }),
   created_at: CREATED_AT,
@@ -140,53 +202,7 @@ const EVENTS = [
 
 describe("TrueForge Incident investigation", () => {
   it("proves two subagents, Daytona analysis, and the literal pending action", async () => {
-    const app = new Hono();
-    app.post("/api/v1/sessions", (context) =>
-      context.json({
-        data: {
-          agent: {
-            id: "agent-investigator",
-            name: "blackbox-investigator",
-            type: "reference",
-          },
-          created_at: CREATED_AT,
-          created_by: "local",
-          id: "session-investigation-1",
-          title: null,
-          updated_at: CREATED_AT,
-        },
-      }),
-    );
-    app.post("/api/v1/sessions/:sessionId/turns", () => {
-      const body = EVENTS.map(
-        (event, index) =>
-          `id: ${index + 1}\ndata: ${JSON.stringify(event)}\n\n`,
-      ).join("");
-      return new Response(body, {
-        headers: { "content-type": "text/event-stream" },
-      });
-    });
-    app.get("/api/v1/sessions/:sessionId/turns/:turnId", (context) =>
-      context.json({
-        data: {
-          created_at: CREATED_AT,
-          id: "turn-investigation-1",
-          previous_turn_id: null,
-          session_id: "session-investigation-1",
-          state: TURN_DONE.state,
-        },
-      }),
-    );
-    app.get(
-      "/api/v1/sessions/:sessionId/turns/:turnId/events",
-      (context) =>
-        context.json({ data: EVENTS, pagination: { limit: 100 } }),
-    );
-    const client = new TrueForge({
-      baseUrl: "http://trueforge.test",
-      fetch: async (input, init) => app.fetch(new Request(input, init)),
-      maxRetries: 0,
-    });
+    const client = createClient(EVENTS);
 
     const evidence = await executeTrueForgeInvestigation(
       client,
@@ -196,10 +212,24 @@ describe("TrueForge Incident investigation", () => {
 
     expect(evidence).toEqual({
       analysis: {
+        artifact: {
+          commandHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          path: ANALYSIS_ARTIFACT_PATH,
+        },
         execution: {
           exitCode: 0,
-          stdout: "BLACKBOX_INVESTIGATION_ANALYSIS_OK\n",
+          stdout: EXEC_RESPONSE.content
+            ? JSON.parse(EXEC_RESPONSE.content).response.result
+            : "",
           toolCallId: "call-exec",
+        },
+        result: {
+          bundleHash: BUNDLE_HASH,
+          canarySha256: CANARY_SHA256,
+          canonicalCause:
+            "missing_destination_allowlist_in_send_external_message",
+          policyHash: BASE_HASH,
+          runId: "run-1",
         },
         sandbox: {
           event: "sandbox.created",
@@ -222,32 +252,160 @@ describe("TrueForge Incident investigation", () => {
         {
           createdEventId: "event-thread-policy-created",
           doneEventId: "event-thread-policy-done",
+          inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          output: {
+            marker: "POLICY_PATCH_REVIEWED",
+            policyHash: BASE_HASH,
+            policyVersion: 1,
+            protectedDocumentAccess: "unchanged",
+            trustedDestination: TRUSTED_DESTINATION,
+          },
+          outputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          role: "PolicyPatchReviewer",
           status: "done",
           threadId: "thread-policy",
-          title: "policy-analysis",
+          title: "PolicyPatchReviewer",
         },
         {
           createdEventId: "event-thread-evidence-created",
           doneEventId: "event-thread-evidence-done",
+          inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          output: {
+            bundleHash: BUNDLE_HASH,
+            canonicalCause:
+              "missing_destination_allowlist_in_send_external_message",
+            marker: "EVIDENCE_PROVENANCE_VERIFIED",
+            runId: "run-1",
+          },
+          outputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          role: "EvidenceProvenanceVerifier",
           status: "done",
           threadId: "thread-evidence",
-          title: "evidence-analysis",
+          title: "EvidenceProvenanceVerifier",
         },
       ],
     });
   });
+
+  it("rejects a marker that was not produced by a created Python artifact", async () => {
+    const events = EVENTS.map((event) =>
+      event.id === EXEC_CALL.id
+        ? {
+            ...EXEC_CALL,
+            tool_calls: EXEC_CALL.tool_calls.map((toolCall) => ({
+                ...toolCall,
+                function: { arguments: "{}", name: "exec" },
+              })),
+          }
+        : event,
+    );
+
+    await expect(
+      executeTrueForgeInvestigation(
+        createClient(events),
+        "blackbox-investigator",
+        "Investigate the supplied finalized Baseline Evidence Bundle.",
+      ),
+    ).rejects.toThrow("analysis artifact command");
+  });
+
+  it("rejects two completed but unfocused subagents", async () => {
+    const genericThreads = [
+      threadEvents(
+        "GenericReviewer",
+        "thread-policy",
+        "call-subagent-policy",
+        JSON.stringify({}),
+        "policy",
+      ),
+      threadEvents(
+        "GenericReviewer",
+        "thread-evidence",
+        "call-subagent-evidence",
+        JSON.stringify({}),
+        "evidence",
+      ),
+    ].flat();
+    const events = EVENTS.map(
+      (event) => genericThreads.find((candidate) => candidate.id === event.id) ?? event,
+    );
+
+    await expect(
+      executeTrueForgeInvestigation(
+        createClient(events),
+        "blackbox-investigator",
+        "Investigate the supplied finalized Baseline Evidence Bundle.",
+      ),
+    ).rejects.toThrow("focused subagent roles");
+  });
 });
 
-function threadEvents(title: string, threadId: string, toolCallId: string) {
+function createClient(events: readonly RawEvent[]): TrueForge {
+  const app = new Hono();
+  app.post("/api/v1/sessions", (context) =>
+    context.json({
+      data: {
+        agent: {
+          id: "agent-investigator",
+          name: "blackbox-investigator",
+          type: "reference",
+        },
+        created_at: CREATED_AT,
+        created_by: "local",
+        id: "session-investigation-1",
+        title: null,
+        updated_at: CREATED_AT,
+      },
+    }),
+  );
+  app.post("/api/v1/sessions/:sessionId/turns", () => {
+    const body = events
+      .map(
+        (event, index) =>
+          `id: ${index + 1}\ndata: ${JSON.stringify(event)}\n\n`,
+      )
+      .join("");
+    return new Response(body, {
+      headers: { "content-type": "text/event-stream" },
+    });
+  });
+  app.get("/api/v1/sessions/:sessionId/turns/:turnId", (context) =>
+    context.json({
+      data: {
+        created_at: CREATED_AT,
+        id: "turn-investigation-1",
+        previous_turn_id: null,
+        session_id: "session-investigation-1",
+        state: TURN_DONE.state,
+      },
+    }),
+  );
+  app.get("/api/v1/sessions/:sessionId/turns/:turnId/events", (context) =>
+    context.json({ data: events, pagination: { limit: 100 } }),
+  );
+  return new TrueForge({
+    baseUrl: "http://trueforge.test",
+    fetch: async (input, init) => app.fetch(new Request(input, init)),
+    maxRetries: 0,
+  });
+}
+
+function threadEvents(
+  title: string,
+  threadId: string,
+  toolCallId: string,
+  output: string,
+  eventName: "evidence" | "policy",
+) {
   return [
     {
       agent_info: {
-        input: `Analyze ${title}`,
+        input: `Perform ${title} for bundle ${BUNDLE_HASH}, run run-1, policy ${BASE_HASH} version 1, and ${TRUSTED_DESTINATION}`,
         name: title,
         type: "dynamic",
       },
       created_at: CREATED_AT,
-      id: `event-thread-${title === "policy-analysis" ? "policy" : "evidence"}-created`,
+          id: `event-thread-${eventName}-created`,
       parent: { thread_id: "main", tool_call_id: toolCallId },
       thread_id: threadId,
       title,
@@ -255,11 +413,11 @@ function threadEvents(title: string, threadId: string, toolCallId: string) {
     },
     {
       created_at: CREATED_AT,
-      id: `event-thread-${title === "policy-analysis" ? "policy" : "evidence"}-done`,
+          id: `event-thread-${eventName}-done`,
       parent: { thread_id: "main", tool_call_id: toolCallId },
       state: {
         output: {
-          content: `${title} completed`,
+          content: output,
           created_at: CREATED_AT,
           id: `event-thread-${threadId}-output`,
           thread_id: threadId,

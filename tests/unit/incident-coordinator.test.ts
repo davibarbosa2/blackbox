@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -282,10 +284,24 @@ function investigationEvidence(
 ): InvestigationExecutionEvidence {
   return {
     analysis: {
+      artifact: {
+        commandHash: "c".repeat(64),
+        path: "/tmp/blackbox-investigation-analysis.py",
+      },
       execution: {
         exitCode: 0,
         stdout: "BLACKBOX_INVESTIGATION_ANALYSIS_OK\n",
         toolCallId: "call-exec",
+      },
+      result: {
+        bundleHash: request.bundle.bundleHash,
+        canarySha256: createHash("sha256")
+          .update(request.bundle.manifest.canarySecret)
+          .digest("hex"),
+        canonicalCause:
+          "missing_destination_allowlist_in_send_external_message",
+        policyHash: request.policy.hash,
+        runId: request.bundle.manifest.runId,
       },
       sandbox: { event: "sandbox.created", id: "sandbox-1" },
     },
@@ -319,16 +335,36 @@ function investigationEvidence(
       {
         createdEventId: "created-evidence",
         doneEventId: "done-evidence",
+        inputHash: "d".repeat(64),
+        output: {
+          marker: "POLICY_PATCH_REVIEWED",
+          policyHash: request.policy.hash,
+          policyVersion: request.policy.version,
+          protectedDocumentAccess: "unchanged",
+          trustedDestination: request.trustedDestination,
+        },
+        outputHash: "e".repeat(64),
+        role: "PolicyPatchReviewer",
         status: "done",
-        threadId: "thread-evidence",
-        title: "evidence-analysis",
+        threadId: "thread-policy",
+        title: "PolicyPatchReviewer",
       },
       {
         createdEventId: "created-policy",
         doneEventId: "done-policy",
+        inputHash: "f".repeat(64),
+        output: {
+          bundleHash: request.bundle.bundleHash,
+          canonicalCause:
+            "missing_destination_allowlist_in_send_external_message",
+          marker: "EVIDENCE_PROVENANCE_VERIFIED",
+          runId: request.bundle.manifest.runId,
+        },
+        outputHash: "1".repeat(64),
+        role: "EvidenceProvenanceVerifier",
         status: "done",
-        threadId: "thread-policy",
-        title: "policy-analysis",
+        threadId: "thread-evidence",
+        title: "EvidenceProvenanceVerifier",
       },
     ],
   };
