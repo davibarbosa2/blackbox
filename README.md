@@ -6,7 +6,7 @@ Support Agent Incident with a finalized, machine-readable Evidence Bundle.
 
 ## Requirements
 
-- Node.js `22.23.2` (also pinned in `.nvmrc`)
+- Node.js `24.18.0` (also pinned in `.nvmrc`)
 - pnpm `11.16.0` (also pinned in `package.json`)
 - Valid OpenRouter and Daytona API credentials
 

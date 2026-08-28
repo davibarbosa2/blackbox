@@ -56,7 +56,7 @@ const EVIDENCE: RuntimeSmokeEvidence = {
     persistedEventIds: ["event-created", "event-done"],
   },
   versions: {
-    node: "v22.23.2",
+    node: "v24.18.0",
     pnpm: "11.16.0",
     trueForge: "0.1.4",
     trueForgeSdk: "0.1.3",
