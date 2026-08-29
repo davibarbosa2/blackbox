@@ -22,7 +22,7 @@ cp .env.example .env
 ```
 
 Fill in `.env`. `OPENROUTER_MODEL_ID` selects the upstream model and is
-required; `stealth/ox-alpha` is only the initially validated example. The
+required; the validated example uses `google/gemini-3.7-flash`. The
 corresponding TrueForge model name is
 `openrouter/${TRUEFORGE_MODEL_ALIAS}`.
 
@@ -148,7 +148,7 @@ is not automatically rolled back.
 | `OPENROUTER_API_KEY` | yes | — |
 | `OPENROUTER_MODEL_ID` | yes | — |
 | `DAYTONA_API_KEY` | yes | — |
-| `TRUEFORGE_MODEL_ALIAS` | no | `ox-alpha` |
+| `TRUEFORGE_MODEL_ALIAS` | no | `gemini-3.7-flash` |
 | `BLACKBOX_HOST` | no | `127.0.0.1` (loopback only; `localhost` is also accepted) |
 | `BLACKBOX_PORT` | no | `3000` |
 | `TRUEFORGE_HOST` | no | `127.0.0.1` |
