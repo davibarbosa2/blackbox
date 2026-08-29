@@ -200,13 +200,26 @@ export class IncidentCoordinator {
         ? this.#remediations.readLatest()
         : this.#remediations.read(current.incidentId);
     const runId = current?.runId ?? incident?.baseline.runId;
-    const run =
+    const baselineRun =
       runId === undefined ? undefined : this.#ledger.readRun?.(runId);
+    const replayRunId = verificationRunId(incident, "replay");
+    const controlRunId = verificationRunId(incident, "control");
+    const replayRun =
+      replayRunId === undefined
+        ? undefined
+        : this.#ledger.readRun?.(replayRunId);
+    const controlRun =
+      controlRunId === undefined
+        ? undefined
+        : this.#ledger.readRun?.(controlRunId);
     return createMissionControlSnapshot(
-      run,
+      baselineRun,
+      replayRun,
+      controlRun,
       incident,
-      this.#active?.runId === runId,
-      this.#activeDecision?.incidentId === incident?.incidentId,
+      runId !== undefined && this.#active?.runId === runId,
+      incident !== undefined &&
+        this.#activeDecision?.incidentId === incident.incidentId,
     );
   }
 
@@ -827,6 +840,21 @@ export class IncidentCoordinator {
       return undefined;
     }
   }
+}
+
+function verificationRunId(
+  incident: DurableIncidentRead | undefined,
+  kind: "replay" | "control",
+): string | undefined {
+  const remediation = incident?.remediation;
+  if (
+    remediation?.state !== "VERIFYING" &&
+    remediation?.state !== "VERIFIED" &&
+    remediation?.state !== "VALIDATION_FAILED"
+  ) {
+    return undefined;
+  }
+  return remediation.verification?.[kind]?.runId;
 }
 
 function validateInvestigationEvidence(

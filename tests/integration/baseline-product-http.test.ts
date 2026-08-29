@@ -52,6 +52,90 @@ describe("Baseline Run product HTTP API", () => {
     await Promise.all(cleanup.splice(0).map((operation) => operation()));
   });
 
+  it("reconstructs idle, live, and inconclusive Baseline states", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-live-state-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    let releaseBaseline = (): void => undefined;
+    const baselineGate = new Promise<void>((resolve) => {
+      releaseBaseline = resolve;
+    });
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl: "http://127.0.0.1:3000",
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime: {
+        async executeBaseline() {
+          await baselineGate;
+          throw new Error("Request failed (503): TrueForge unavailable");
+        },
+        executeSmoke: () => new Promise(() => undefined),
+      },
+    });
+    cleanup.push(() => application.shutdown());
+
+    const readyResponse = await application.app.request(
+      "/api/mission-control",
+    );
+    expect(readyResponse.status).toBe(200);
+    await expect(readyResponse.json()).resolves.toMatchObject({
+      activity: [],
+      incident: null,
+      phase: "READY",
+      status: "READY",
+    });
+
+    const start = await application.app.request("/api/incidents", {
+      method: "POST",
+    });
+    expect(start.status).toBe(202);
+    const started = z
+      .object({ incidentId: z.string(), runId: z.string() })
+      .parse(await start.json());
+    const liveResponse = await application.app.request(
+      "/api/mission-control",
+    );
+    expect(liveResponse.status).toBe(200);
+    await expect(liveResponse.json()).resolves.toMatchObject({
+      activity: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "phase",
+          source: "BLACKBOX",
+          status: "ACTIVE",
+          title: "Support Agent turn in progress",
+        }),
+      ]),
+      incident: { id: started.incidentId, status: "OPEN" },
+      phase: "BASELINE",
+      status: "BASELINE_RUNNING",
+    });
+
+    releaseBaseline();
+    await vi.waitFor(async () => {
+      const failedResponse = await application.app.request(
+        "/api/mission-control",
+      );
+      expect(failedResponse.status).toBe(200);
+      const failed = await failedResponse.json();
+      expect(failed).toMatchObject({
+        baseline: {
+          complete: false,
+          runId: started.runId,
+          verdict: "INCONCLUSIVE",
+        },
+        comparison: { containment: null },
+        failure: {
+          title: "Baseline evidence was inconclusive",
+        },
+        phase: "RESULT",
+        status: "BASELINE_INCONCLUSIVE",
+      });
+      expect(JSON.stringify(failed)).not.toContain("BLACKBOX-CANARY-");
+    });
+  });
+
   it("isolates Runs and returns vulnerable bundles only after complete real tool evidence", async () => {
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-baseline-"));
     cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
@@ -440,6 +524,20 @@ describe("Baseline Run product HTTP API", () => {
       },
     });
     expect(resolvePolicyAction).toHaveBeenCalledOnce();
+
+    const missionControl = await fetch(`${baseUrl}/api/mission-control`);
+    expect(missionControl.status).toBe(200);
+    await expect(missionControl.json()).resolves.toMatchObject({
+      approval: null,
+      comparison: { containment: null },
+      failure: {
+        detail:
+          "The Capability Policy was not changed and verification did not start.",
+        title: "Policy Patch denied",
+      },
+      phase: "RESULT",
+      status: "DENIED",
+    });
   });
 
   it("applies the approved patch and verifies the replay and control Evidence Bundles", async () => {
@@ -509,18 +607,24 @@ describe("Baseline Run product HTTP API", () => {
     expect(controlResponse.status).toBe(200);
     const replay = z
       .object({
+        bundleHash: z.string(),
         completeness: z.object({ complete: z.literal(true) }),
-        manifest: z.object({ fingerprints: z.record(z.string(), z.string()) }),
+        manifest: z.object({
+          fingerprints: z.record(z.string(), z.string()),
+          runId: z.string(),
+        }),
         timeline: z.array(z.record(z.string(), z.unknown())),
         verdict: z.literal("PROTECTED"),
       })
       .parse(await replayResponse.json());
     const control = z
       .object({
+        bundleHash: z.string(),
         completeness: z.object({ complete: z.literal(true) }),
         controlResult: z.literal("PASSED"),
         manifest: z.object({
           fingerprints: z.object({ scenario: z.string() }),
+          runId: z.string(),
         }),
         timeline: z.array(z.record(z.string(), z.unknown())),
       })
@@ -541,6 +645,67 @@ describe("Baseline Run product HTTP API", () => {
     );
     expect(control.timeline).toContainEqual(
       expect.objectContaining({ type: "message.received_trusted" }),
+    );
+
+    const missionControlResponse = await fetch(`${baseUrl}/api/mission-control`);
+    expect(missionControlResponse.status).toBe(200);
+    const missionControl = await missionControlResponse.json();
+    expect(missionControl).toMatchObject({
+      approval: null,
+      comparison: {
+        baseline: {
+          bundleHash: baseline.bundleHash,
+          complete: true,
+          exactCanaryReceipts: 1,
+          evidenceUrl: `/api/runs/${baseline.manifest.runId}/evidence`,
+          result: "VULNERABLE",
+          runId: baseline.manifest.runId,
+        },
+        containment: {
+          claim: "VERIFIED_REMEDIATION",
+          evidence: [
+            {
+              bundleHash: baseline.bundleHash,
+              url: `/api/runs/${baseline.manifest.runId}/evidence`,
+            },
+            {
+              bundleHash: replay.bundleHash,
+              url: `/api/runs/${replay.manifest.runId}/evidence`,
+            },
+            {
+              bundleHash: control.bundleHash,
+              url: `/api/runs/${control.manifest.runId}/evidence`,
+            },
+          ],
+        },
+        control: {
+          bundleHash: control.bundleHash,
+          complete: true,
+          evidenceUrl: `/api/runs/${control.manifest.runId}/evidence`,
+          result: "PASSED",
+          runId: control.manifest.runId,
+          trustedDestinationReceipts: 1,
+        },
+        replay: {
+          bundleHash: replay.bundleHash,
+          complete: true,
+          evidenceUrl: `/api/runs/${replay.manifest.runId}/evidence`,
+          explicitPolicyDenial: true,
+          matchingCanaryReceipts: 0,
+          result: "PROTECTED",
+          runId: replay.manifest.runId,
+        },
+      },
+      failure: null,
+      incident: {
+        id: baseline.manifest.incidentId,
+        status: "RESOLVED",
+      },
+      phase: "RESULT",
+      status: "VERIFIED",
+    });
+    expect(JSON.stringify(missionControl)).not.toContain(
+      baseline.manifest.canarySecret,
     );
   });
 
@@ -609,6 +774,17 @@ describe("Baseline Run product HTTP API", () => {
     expect(failed.remediation).toMatchObject({
       error: "Approved apply_policy_patch produced no durable application",
       state: "VALIDATION_FAILED",
+    });
+    const missionControl = await fetch(`${baseUrl}/api/mission-control`);
+    expect(missionControl.status).toBe(200);
+    await expect(missionControl.json()).resolves.toMatchObject({
+      comparison: { containment: null },
+      failure: {
+        detail: "Approved apply_policy_patch produced no durable application",
+        title: "Remediation validation failed",
+      },
+      phase: "RESULT",
+      status: "VALIDATION_FAILED",
     });
     const persistedPolicy = createSqliteCapabilityPolicy(
       join(runtimeDirectory, "blackbox.sqlite"),
@@ -811,6 +987,14 @@ describe("Baseline Run product HTTP API", () => {
       },
     );
     expect(denial.status).toBe(202);
+    const pendingDecision = await fetch(`${baseUrl}/api/mission-control`);
+    expect(pendingDecision.status).toBe(200);
+    await expect(pendingDecision.json()).resolves.toMatchObject({
+      approval: { pendingDecision: secondAwaiting.remediation.pendingDecision },
+      decisionPending: true,
+      phase: "APPROVAL",
+      status: "AWAITING_APPROVAL",
+    });
     const blockedStart = await fetch(`${baseUrl}/api/incidents`, {
       method: "POST",
     });
@@ -884,6 +1068,23 @@ describe("Baseline Run product HTTP API", () => {
           replay: { verdict: "INCONCLUSIVE" },
         },
       },
+    });
+    const missionControlResponse = await fetch(`${baseUrl}/api/mission-control`);
+    expect(missionControlResponse.status).toBe(200);
+    await expect(missionControlResponse.json()).resolves.toMatchObject({
+      comparison: {
+        containment: null,
+        control: { complete: true, result: "PASSED" },
+        replay: {
+          complete: false,
+          result: "INCONCLUSIVE",
+        },
+      },
+      failure: {
+        title: "Remediation validation failed",
+      },
+      phase: "RESULT",
+      status: "VALIDATION_FAILED",
     });
     const persistedPolicy = createSqliteCapabilityPolicy(
       join(runtimeDirectory, "blackbox.sqlite"),
