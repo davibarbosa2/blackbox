@@ -9,6 +9,7 @@ import { configureTrueForge } from "./configure.js";
 import { executeTrueForgeBaseline } from "./execute-baseline.js";
 import { executeTrueForgeInvestigation } from "./execute-investigation.js";
 import { executeTrueForgeSmoke } from "./execute-smoke.js";
+import { executeTrueForgePolicyAction } from "./resolve-policy-action.js";
 import {
   InvestigationExecutionError,
   RuntimeSmokeStageError,
@@ -28,29 +29,30 @@ export function createSdkTrueForgeRuntime(
     timeoutInSeconds: 60,
   });
   const secrets = [config.openRouter.apiKey, config.daytona.apiKey];
+  const executeSupportRun: TrueForgeRuntime["executeBaseline"] = async ({
+    mcpAuthorization,
+    runId,
+    signal,
+  }) => {
+    try {
+      await readHealth(config.trueForge.baseUrl, fetcher, signal);
+      const agentName = await configureSupportAgent(
+        client,
+        config,
+        mcpAuthorization,
+        signal,
+      );
+      return await executeTrueForgeBaseline(client, agentName, runId, signal);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Support Agent Run failed";
+      throw new Error(redactSecrets(message, secrets));
+    }
+  };
 
   return {
-    async executeBaseline({ mcpAuthorization, runId, signal }) {
-      try {
-        await readHealth(config.trueForge.baseUrl, fetcher, signal);
-        const agentName = await configureSupportAgent(
-          client,
-          config,
-          mcpAuthorization,
-          signal,
-        );
-        return await executeTrueForgeBaseline(
-          client,
-          agentName,
-          runId,
-          signal,
-        );
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Baseline Run failed";
-        throw new Error(redactSecrets(message, secrets));
-      }
-    },
+    executeBaseline: executeSupportRun,
+    executeControl: executeSupportRun,
     async executeInvestigation(request) {
       try {
         await readHealth(config.trueForge.baseUrl, fetcher, request.signal);
@@ -77,6 +79,30 @@ export function createSdkTrueForgeRuntime(
           );
         }
         throw new Error(redacted);
+      }
+    },
+    executeReplay: executeSupportRun,
+    async resolvePolicyAction(request) {
+      try {
+        await readHealth(config.trueForge.baseUrl, fetcher, request.signal);
+        await configureInvestigatorAgent(
+          client,
+          config,
+          request.mcpAuthorization,
+          request.signal,
+        );
+        return await executeTrueForgePolicyAction(
+          client,
+          request.pendingDecision,
+          request.decision,
+          request.signal,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Policy action resolution failed";
+        throw new Error(redactSecrets(message, secrets));
       }
     },
     async executeSmoke(options): Promise<RuntimeSmokeEvidence> {

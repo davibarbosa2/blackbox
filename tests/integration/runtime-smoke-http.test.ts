@@ -26,13 +26,13 @@ const EVIDENCE: RuntimeSmokeEvidence = {
   },
   provider: {
     name: "openrouter",
-    upstreamModelId: "stealth/ox-alpha",
-    modelAlias: "ox-alpha",
-    trueForgeModel: "openrouter/ox-alpha",
+    upstreamModelId: "google/gemini-3.7-flash",
+    modelAlias: "gemini-3.7-flash",
+    trueForgeModel: "openrouter/gemini-3.7-flash",
   },
   preflight: {
     finishReason: "tool_calls",
-    responseModel: "stealth/ox-alpha",
+    responseModel: "google/gemini-3.7-flash",
     toolCallId: "call-preflight",
     toolName: "blackbox_preflight",
   },
@@ -56,7 +56,7 @@ const EVIDENCE: RuntimeSmokeEvidence = {
     persistedEventIds: ["event-created", "event-done"],
   },
   versions: {
-    node: "v22.23.2",
+    node: "v24.18.0",
     pnpm: "11.16.0",
     trueForge: "0.1.4",
     trueForgeSdk: "0.1.3",

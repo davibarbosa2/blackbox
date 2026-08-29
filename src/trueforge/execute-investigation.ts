@@ -175,6 +175,7 @@ async function executeInvestigation(
       callId: applyCall.id,
       proposal,
       sessionId: session.data.id,
+      threadId: persistedAction.threadId,
       toolName: "apply_policy_patch",
       turnId: turnCreated.turnId,
     },

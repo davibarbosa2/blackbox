@@ -16,7 +16,7 @@ Also fix the CLI's failure rendering even if Evlog is adopted: the bundle alread
 
 This is not a Nuxt-only library. Evlog has a dedicated [`evlog/hono` middleware](https://www.evlog.dev/integrate/frameworks/hono) and a separate [standalone TypeScript API](https://www.evlog.dev/integrate/frameworks/standalone) for CLIs and background jobs. The Hono integration creates one request-scoped wide event, exposes the logger through `c.get("log")` or `useLogger()`, captures errors, status, method, path, duration, and request id, and emits when the response finishes.
 
-The currently published package declares Node `>=18` and optional Hono peer `>=4.12.30`; BLACKBOX pins Node `22.23.2` and Hono `4.13.4`, so the declared ranges match. See the official [2.27.1 package metadata](https://github.com/HugoRCD/evlog/blob/7e1f6008ec89c925eccc1ee1db551c5dbb6e5af1/packages/evlog/package.json) and [Hono integration source](https://github.com/HugoRCD/evlog/blob/7e1f6008ec89c925eccc1ee1db551c5dbb6e5af1/packages/evlog/src/hono/index.ts).
+The currently published package declares Node `>=18` and optional Hono peer `>=4.12.30`; BLACKBOX pins Node `24.18.0` and Hono `4.13.4`, so the declared ranges match. See the official [2.27.1 package metadata](https://github.com/HugoRCD/evlog/blob/7e1f6008ec89c925eccc1ee1db551c5dbb6e5af1/packages/evlog/package.json) and [Hono integration source](https://github.com/HugoRCD/evlog/blob/7e1f6008ec89c925eccc1ee1db551c5dbb6e5af1/packages/evlog/src/hono/index.ts).
 
 ### What it adds
 

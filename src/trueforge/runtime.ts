@@ -1,7 +1,10 @@
 import { z } from "zod";
 
-import type { EvidenceBundle } from "../evidence/ledger.js";
-import { policyPatchSchema } from "../policy/capability-policy.js";
+import type { BaselineEvidenceBundle } from "../evidence/ledger.js";
+import {
+  type PolicyRead,
+  policyPatchSchema,
+} from "../policy/capability-policy.js";
 
 export const runtimeSmokeEvidenceSchema = z.object({
   agent: z.object({
@@ -119,6 +122,10 @@ export const investigationProposalSchema = z.strictObject({
   patch: policyPatchSchema,
 });
 
+export type InvestigationProposal = z.infer<
+  typeof investigationProposalSchema
+>;
+
 const completedSubagentSchema = z.strictObject({
   createdEventId: z.string(),
   doneEventId: z.string(),
@@ -200,9 +207,18 @@ export const pendingPolicyActionSchema = z.strictObject({
   callId: z.string(),
   proposal: investigationProposalSchema,
   sessionId: z.string(),
+  threadId: z.string(),
   toolName: z.literal("apply_policy_patch"),
   turnId: z.string(),
 });
+
+export const pendingPolicyDecisionSchema = pendingPolicyActionSchema.omit({
+  proposal: true,
+});
+
+export type PendingPolicyDecision = z.infer<
+  typeof pendingPolicyDecisionSchema
+>;
 
 export const investigationExecutionEvidenceSchema = z.strictObject({
   analysis: investigationAnalysisSchema,
@@ -218,6 +234,17 @@ export type InvestigationExecutionEvidence = z.infer<
   typeof investigationExecutionEvidenceSchema
 >;
 
+export const policyActionResolutionSchema = z.strictObject({
+  decision: z.enum(["allow", "deny"]),
+  pendingDecision: pendingPolicyDecisionSchema,
+  resumedTurnId: z.string(),
+  status: z.literal("done"),
+});
+
+export type PolicyActionResolution = z.infer<
+  typeof policyActionResolutionSchema
+>;
+
 export interface BaselineExecutionRequest {
   mcpAuthorization: string;
   runId: string;
@@ -225,18 +252,18 @@ export interface BaselineExecutionRequest {
 }
 
 export interface InvestigationExecutionRequest {
-  bundle: EvidenceBundle;
+  bundle: BaselineEvidenceBundle;
   mcpAuthorization: string;
-  policy: {
-    hash: string;
-    rules: {
-      read_internal_document: "allow";
-      send_external_message: { destinations: "*" };
-    };
-    version: number;
-  };
+  policy: PolicyRead;
   signal?: AbortSignal;
   trustedDestination: string;
+}
+
+export interface PolicyActionResolutionRequest {
+  decision: "allow" | "deny";
+  mcpAuthorization: string;
+  pendingDecision: z.infer<typeof pendingPolicyDecisionSchema>;
+  signal?: AbortSignal;
 }
 
 export class RuntimeSmokeStageError extends Error {
@@ -265,10 +292,19 @@ export interface TrueForgeRuntime {
   executeBaseline(
     request: BaselineExecutionRequest,
   ): Promise<BaselineExecutionEvidence>;
+  executeControl?: (
+    request: BaselineExecutionRequest,
+  ) => Promise<BaselineExecutionEvidence>;
   executeSmoke(options?: {
     signal?: AbortSignal;
   }): Promise<RuntimeSmokeEvidence>;
   executeInvestigation?: (
     request: InvestigationExecutionRequest,
   ) => Promise<InvestigationExecutionEvidence>;
+  executeReplay?: (
+    request: BaselineExecutionRequest,
+  ) => Promise<BaselineExecutionEvidence>;
+  resolvePolicyAction?: (
+    request: PolicyActionResolutionRequest,
+  ) => Promise<PolicyActionResolution>;
 }

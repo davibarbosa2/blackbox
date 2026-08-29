@@ -2,11 +2,11 @@ import { createLogger, initLogger } from "evlog";
 import { createFsDrain } from "evlog/fs";
 import { evlog } from "evlog/hono";
 
-import type { EvidenceBundle } from "../evidence/ledger.js";
+import type { BaselineEvidenceBundle } from "../evidence/ledger.js";
 import type { BaselineFailureStage, SafeFailure } from "../failure.js";
 
 export interface BaselineRunObservation {
-  completed(bundle: EvidenceBundle): void;
+  completed(bundle: BaselineEvidenceBundle): void;
   failed(failure: SafeFailure, stage: BaselineFailureStage): void;
   finalizationFailed(): void;
 }

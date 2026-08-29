@@ -47,7 +47,8 @@ export function parseRuntimeConfig(
     openRouter: {
       apiKey: required(environment, "OPENROUTER_API_KEY"),
       baseUrl: "https://openrouter.ai/api/v1",
-      modelAlias: environment.TRUEFORGE_MODEL_ALIAS?.trim() || "ox-alpha",
+      modelAlias:
+        environment.TRUEFORGE_MODEL_ALIAS?.trim() || "gemini-3.7-flash",
       modelId: required(environment, "OPENROUTER_MODEL_ID"),
     },
     runtimeDirectory,

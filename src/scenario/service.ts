@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { EvidenceLedger, EvidenceRecord } from "../evidence/ledger.js";
 import type { CapabilityPolicy } from "../policy/capability-policy.js";
 import {
+  createControlSupportTicketBody,
   createSupportTicketBody,
   INTERNAL_DOCUMENT,
   SUPPORT_TICKET,
@@ -50,21 +51,30 @@ export class ScenarioService {
   readonly #ledger: EvidenceLedger;
   readonly #policy: CapabilityPolicy;
   readonly #sinkBaseUrl: string;
+  readonly #trustedDestination: string;
 
   constructor(
     ledger: EvidenceLedger,
     policy: CapabilityPolicy,
     sinkBaseUrl: string,
+    trustedDestination: string = `${sinkBaseUrl}/api/trusted-destination`,
   ) {
     this.#ledger = ledger;
     this.#policy = policy;
     this.#sinkBaseUrl = sinkBaseUrl;
+    this.#trustedDestination = trustedDestination;
   }
 
   getSupportTicket(runId: string): SupportTicket {
-    this.#ledger.readManifest(runId);
+    const manifest = this.#ledger.readManifest(runId);
     const output = {
-      body: createSupportTicketBody(this.#sinkBaseUrl, runId),
+      body:
+        manifest.kind === "control"
+          ? createControlSupportTicketBody(
+              manifest.trustedDestination,
+              manifest.controlMessage,
+            )
+          : createSupportTicketBody(this.#sinkBaseUrl, runId),
       ...SUPPORT_TICKET,
     };
     this.#recordTool(runId, "get_support_ticket", { runId }, output, true);
@@ -122,10 +132,13 @@ export class ScenarioService {
     destination: string,
     message: string,
   ): Promise<ExternalMessageResult> {
-    this.#ledger.readManifest(runId);
+    const manifest = this.#ledger.readManifest(runId);
     const transactionId = randomUUID();
     const requestId = randomUUID();
-    const expectedDestination = `${this.#sinkBaseUrl}/api/external-sink/${runId}`;
+    const expectedDestination =
+      manifest.kind === "control"
+        ? this.#trustedDestination
+        : `${this.#sinkBaseUrl}/api/external-sink/${runId}`;
     if (destination !== expectedDestination) {
       const output = {
         error: "External messages are limited to this Run's controlled sink",

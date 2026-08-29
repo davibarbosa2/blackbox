@@ -6,7 +6,7 @@ Support Agent Incident with a finalized, machine-readable Evidence Bundle.
 
 ## Requirements
 
-- Node.js `22.23.2` (also pinned in `.nvmrc`)
+- Node.js `24.18.0` (also pinned in `.nvmrc`)
 - pnpm `11.16.0` (also pinned in `package.json`)
 - Valid OpenRouter and Daytona API credentials
 
@@ -22,7 +22,7 @@ cp .env.example .env
 ```
 
 Fill in `.env`. `OPENROUTER_MODEL_ID` selects the upstream model and is
-required; `stealth/ox-alpha` is only the initially validated example. The
+required; the validated example uses `google/gemini-3.7-flash`. The
 corresponding TrueForge model name is
 `openrouter/${TRUEFORGE_MODEL_ALIAS}`.
 
@@ -118,6 +118,29 @@ rg '"runId":"<run-id>"' .evlog/logs
 These logs are best-effort operational telemetry. The SQLite Evidence Ledger
 remains the sole source of truth for evidence completeness and verdicts.
 
+## Verified Remediation acceptance
+
+Run the complete approval and verification tracer bullet through the product
+HTTP boundary:
+
+```bash
+pnpm accept:remediation
+```
+
+The command runs the Vulnerable Baseline and TrueForge–Daytona investigation,
+then approves the exact persisted `apply_policy_patch` required action. BLACKBOX
+atomically applies and reads back the reviewed destination allowlist before it
+automatically creates a fresh equivalent Attack Replay and a legitimate Control
+Run.
+
+Success requires three finalized Evidence Bundles: the Baseline is `VULNERABLE`,
+the replay reads the protected document and reaches an explicit policy denial
+with no exact Canary receipt through its observation cutoff, and the control
+delivers its legitimate response to the Trusted Destination. Only then does the
+Remediation become `VERIFIED`. Any readback, replay, control, or finalization
+failure reports `VALIDATION_FAILED`; the restrictive policy remains applied and
+is not automatically rolled back.
+
 ## Configuration
 
 | Variable | Required | Default |
@@ -125,7 +148,7 @@ remains the sole source of truth for evidence completeness and verdicts.
 | `OPENROUTER_API_KEY` | yes | — |
 | `OPENROUTER_MODEL_ID` | yes | — |
 | `DAYTONA_API_KEY` | yes | — |
-| `TRUEFORGE_MODEL_ALIAS` | no | `ox-alpha` |
+| `TRUEFORGE_MODEL_ALIAS` | no | `gemini-3.7-flash` |
 | `BLACKBOX_HOST` | no | `127.0.0.1` (loopback only; `localhost` is also accepted) |
 | `BLACKBOX_PORT` | no | `3000` |
 | `TRUEFORGE_HOST` | no | `127.0.0.1` |

@@ -39,7 +39,7 @@ change behavior or architecture.
 6. Before handoff, run `pnpm lint`, `pnpm typecheck`, `pnpm test`, and
    `git diff --check`.
 
-Use Node.js 22.23.2 and pnpm 11.16.0. Runtime acceptance commands use real
+Use Node.js 24.18.0 and pnpm 11.16.0. Runtime acceptance commands use real
 OpenRouter and Daytona resources; deterministic checks must not depend on them.
 When a change affects a real-runtime boundary, run the relevant acceptance
 command from `README.md` and report infrastructure failures separately from

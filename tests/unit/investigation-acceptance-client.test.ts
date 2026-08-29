@@ -42,6 +42,7 @@ const PENDING_INCIDENT = {
     verdict: "VULNERABLE",
   },
   incidentId: BUNDLE.manifest.incidentId,
+  incidentStatus: "OPEN",
   remediation: {
     analysis: {
       artifact: {
@@ -92,6 +93,7 @@ const PENDING_INCIDENT = {
       actionId: "action-1",
       callId: "call-1",
       sessionId: "session-1",
+      threadId: "main",
       toolName: "apply_policy_patch",
       turnId: "turn-1",
     },
@@ -150,6 +152,7 @@ describe("Investigation acceptance HTTP client", () => {
               : {
                   baseline: PENDING_INCIDENT.baseline,
                   incidentId: PENDING_INCIDENT.incidentId,
+                  incidentStatus: "OPEN",
                   remediation:
                     reads === 1
                       ? { lifecycle: [], state: "INVESTIGATING" }

@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
-  EvidenceBundle,
+  BaselineEvidenceBundle,
+  BaselineRunManifest,
   EvidenceLedger,
   EvidenceRecord,
   RunManifest,
@@ -83,6 +84,12 @@ describe("Incident coordinator observability", () => {
       },
       finalizeBaseline(): never {
         throw new Error("SQLite finalization failed with private details");
+      },
+      finalizeControl(): never {
+        throw new Error("Control finalization is not used by this test");
+      },
+      finalizeReplay(): never {
+        throw new Error("Replay finalization is not used by this test");
       },
       readBundle: () => undefined,
       readManifest(): RunManifest {
@@ -181,7 +188,7 @@ describe("Incident coordinator observability", () => {
 
     expect(executeInvestigation).toHaveBeenCalledOnce();
     expect(remediations.read(started.incidentId)?.remediation).toMatchObject({
-      lifecycle: [{ state: "DRAFTED" }],
+      lifecycle: [{ state: "DRAFTED" }, { state: "VALIDATION_FAILED" }],
       pendingDecision: {
         actionId: "action-1",
         callId: "call-apply",
@@ -263,10 +270,152 @@ describe("Incident coordinator observability", () => {
     expect(remediations.read(started.incidentId)).toBeUndefined();
     remediations.close();
   });
+
+  it("denies the exact persisted action without applying policy or starting verification", async () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    const resolvePolicyAction = vi.fn(async (request) => ({
+      decision: request.decision,
+      pendingDecision: request.pendingDecision,
+      resumedTurnId: "turn-denial",
+      status: "done" as const,
+    }));
+    const runtime: TrueForgeRuntime = {
+      executeBaseline: async ({ runId }) => baselineEvidence(runId),
+      executeInvestigation: async (request) =>
+        investigationEvidence(request, [trustedDestination]),
+      executeSmoke: () => new Promise(() => undefined),
+      resolvePolicyAction,
+    };
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const baselinePolicy = policy.read();
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime,
+      trustedDestination,
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    await vi.waitFor(() => {
+      expect(remediations.read(started.incidentId)?.remediation.state).toBe(
+        "AWAITING_APPROVAL",
+      );
+    });
+    const pending = remediations.read(started.incidentId)?.remediation;
+    if (pending?.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+
+    expect(
+      coordinator.decide(started.incidentId, {
+        decision: "deny",
+        pendingDecision: pending.pendingDecision,
+      }),
+    ).toMatchObject({ started: true });
+    await vi.waitFor(() => {
+      expect(remediations.read(started.incidentId)).toMatchObject({
+        incidentStatus: "OPEN",
+        remediation: {
+          decision: {
+            ...pending.pendingDecision,
+            decision: "deny",
+          },
+          policyReadback: baselinePolicy,
+          state: "DENIED",
+        },
+      });
+    });
+
+    expect(resolvePolicyAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: "deny",
+        pendingDecision: pending.pendingDecision,
+      }),
+    );
+    expect(policy.read()).toEqual(baselinePolicy);
+    expect(harness.finalized).toHaveBeenCalledOnce();
+    remediations.close();
+  });
+
+  it("marks a stale approval without resuming or rebasing the pending action", async () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    const resolvePolicyAction = vi.fn();
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const runtime: TrueForgeRuntime = {
+      executeBaseline: async ({ runId }) => baselineEvidence(runId),
+      executeInvestigation: async (request) =>
+        investigationEvidence(request, [trustedDestination]),
+      executeSmoke: () => new Promise(() => undefined),
+      resolvePolicyAction,
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime,
+      trustedDestination,
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    await vi.waitFor(() => {
+      expect(remediations.read(started.incidentId)?.remediation.state).toBe(
+        "AWAITING_APPROVAL",
+      );
+    });
+    const pending = remediations.read(started.incidentId)?.remediation;
+    if (pending?.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+    policy.applyPatch(
+      {
+        destinationAllowlist: [trustedDestination],
+        expectedBaseHash: pending.dryRun.base.hash,
+        expectedBaseVersion: pending.dryRun.base.version,
+      },
+      {
+        actionId: "different-action",
+        callId: "different-call",
+        decidedAt: "2026-08-28T12:00:00.000Z",
+        sessionId: "different-session",
+        threadId: "main",
+        turnId: "different-turn",
+      },
+    );
+
+    expect(
+      coordinator.decide(started.incidentId, {
+        decision: "allow",
+        pendingDecision: pending.pendingDecision,
+      }),
+    ).toMatchObject({ started: false, state: "STALE" });
+    expect(remediations.read(started.incidentId)).toMatchObject({
+      incidentStatus: "OPEN",
+      remediation: {
+        decision: { decision: "allow" },
+        policyReadback: policy.read(),
+        state: "STALE",
+      },
+    });
+    expect(resolvePolicyAction).not.toHaveBeenCalled();
+    remediations.close();
+  });
 });
 
-function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
-  let manifest: RunManifest | undefined;
+function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
+  let manifest: BaselineRunManifest | undefined;
   const finalized = vi.fn();
   const records: EvidenceRecord[] = [];
   const ledger: EvidenceLedger = {
@@ -274,9 +423,12 @@ function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
       records.push(...sourceRecords);
     },
     createRun(sourceManifest): void {
+      if (sourceManifest.kind !== "baseline") {
+        throw new Error("Only Baseline Runs are used by this test");
+      }
       manifest = sourceManifest;
     },
-    finalizeBaseline(): EvidenceBundle {
+    finalizeBaseline(): BaselineEvidenceBundle {
       finalized();
       if (manifest === undefined) throw new Error("Run manifest unavailable");
       return {
@@ -291,6 +443,12 @@ function createFinalizingHarness(verdict: EvidenceBundle["verdict"]) {
         timeline: [],
         verdict,
       };
+    },
+    finalizeControl(): never {
+      throw new Error("Control finalization is not used by this test");
+    },
+    finalizeReplay(): never {
+      throw new Error("Replay finalization is not used by this test");
     },
     readBundle: () => undefined,
     readManifest(): RunManifest {
@@ -370,6 +528,7 @@ function investigationEvidence(
         },
       },
       sessionId: "session-investigation",
+      threadId: "main",
       toolName: "apply_policy_patch",
       turnId: "turn-investigation",
     },

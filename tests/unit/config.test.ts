@@ -10,7 +10,7 @@ describe("runtime configuration", () => {
       {
         DAYTONA_API_KEY: "daytona-secret",
         OPENROUTER_API_KEY: "openrouter-secret",
-        OPENROUTER_MODEL_ID: "stealth/ox-alpha",
+        OPENROUTER_MODEL_ID: "google/gemini-3.7-flash",
       },
       "/workspace/blackbox",
     );
@@ -26,8 +26,8 @@ describe("runtime configuration", () => {
       openRouter: {
         apiKey: "openrouter-secret",
         baseUrl: "https://openrouter.ai/api/v1",
-        modelAlias: "ox-alpha",
-        modelId: "stealth/ox-alpha",
+        modelAlias: "gemini-3.7-flash",
+        modelId: "google/gemini-3.7-flash",
       },
       runtimeDirectory: resolve("/workspace/blackbox", ".blackbox/runtime"),
       trueForge: {
@@ -83,7 +83,7 @@ describe("runtime configuration", () => {
         BLACKBOX_HOST: "0.0.0.0",
         DAYTONA_API_KEY: "daytona-secret",
         OPENROUTER_API_KEY: "openrouter-secret",
-        OPENROUTER_MODEL_ID: "stealth/ox-alpha",
+        OPENROUTER_MODEL_ID: "google/gemini-3.7-flash",
       }),
     ).toThrow("BLACKBOX_HOST must be 127.0.0.1 or localhost");
   });
@@ -94,7 +94,7 @@ describe("runtime configuration", () => {
         BLACKBOX_PORT: "not-a-port",
         DAYTONA_API_KEY: "daytona-secret",
         OPENROUTER_API_KEY: "openrouter-secret",
-        OPENROUTER_MODEL_ID: "stealth/ox-alpha",
+        OPENROUTER_MODEL_ID: "google/gemini-3.7-flash",
       }),
     ).toThrow("BLACKBOX_PORT must be an integer between 1 and 65535");
   });

@@ -1,24 +1,44 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import type {
+  BaselineEvidenceBundle,
+  ControlEvidenceBundle,
   EvidenceBundle,
   EvidenceLedger,
   EvidenceRecord,
+  ReplayEvidenceBundle,
+  RunManifest,
 } from "../evidence/ledger.js";
+import { baselineEvidenceBundleSchema } from "../evidence/ledger.js";
 import { classifyTrueForgeFailure } from "../failure.js";
-import type { CapabilityPolicy } from "../policy/capability-policy.js";
+import type {
+  CapabilityPolicy,
+  PolicyApplicationResult,
+  PolicyApprovalEvidence,
+  PolicyRead,
+} from "../policy/capability-policy.js";
 import {
+  type AwaitingApprovalRemediation,
   type DurableIncidentRead,
+  type RemediationDecisionRequest,
   SqliteRemediationStore,
 } from "../remediation/store.js";
 import type {
   BaselineRunObservation,
   BaselineRunObservationContext,
 } from "../observability/evlog.js";
-import { createBaselineRunManifest } from "../scenario/definition.js";
+import {
+  createBaselineRunManifest,
+  createControlRunManifest,
+  createReplayRunManifest,
+} from "../scenario/definition.js";
 import {
   InvestigationExecutionError,
+  type InvestigationProposal,
+  investigationProposalSchema,
   investigationExecutionEvidenceSchema,
+  policyActionResolutionSchema,
 } from "../trueforge/runtime.js";
 import type {
   BaselineExecutionEvidence,
@@ -29,9 +49,13 @@ export type StartIncidentResult =
   | { incidentId: string; runId: string; started: true }
   | { activeRunId: string; started: false };
 
-export type BaselineRunRead =
+export type RunRead =
   | { status: "running" }
   | { bundle: EvidenceBundle; status: "completed" };
+
+export type RemediationDecisionResult =
+  | { started: true }
+  | { started: false; state: "STALE" };
 
 export interface IncidentCoordinatorOptions {
   baseUrl: string;
@@ -66,6 +90,21 @@ export class IncidentCoordinator {
         runId: string;
       }
     | undefined;
+  #activeDecision:
+    | {
+        completion: Promise<void>;
+        controller: AbortController;
+        incidentId: string;
+        mcpAuthorization: string;
+      }
+    | undefined;
+  #pendingApplication:
+    | {
+        approval: PolicyApprovalEvidence;
+        incidentId: string;
+        proposal: InvestigationProposal;
+      }
+    | undefined;
 
   constructor(options: IncidentCoordinatorOptions) {
     this.#runtime = options.runtime;
@@ -82,6 +121,14 @@ export class IncidentCoordinator {
   start(): StartIncidentResult {
     if (this.#active !== undefined) {
       return { activeRunId: this.#active.runId, started: false };
+    }
+    if (this.#activeDecision !== undefined) {
+      const incident = this.#remediations.read(this.#activeDecision.incidentId);
+      return {
+        activeRunId:
+          incident?.baseline.runId ?? this.#activeDecision.incidentId,
+        started: false,
+      };
     }
 
     const incidentId = randomUUID();
@@ -124,7 +171,7 @@ export class IncidentCoordinator {
     return { incidentId, runId, started: true };
   }
 
-  read(runId: string): BaselineRunRead | undefined {
+  read(runId: string): RunRead | undefined {
     const bundle = this.#ledger.readBundle(runId);
     if (bundle !== undefined) return { bundle, status: "completed" };
     if (this.#active?.runId === runId) return { status: "running" };
@@ -135,8 +182,111 @@ export class IncidentCoordinator {
     return this.#remediations.read(incidentId);
   }
 
+  decide(
+    incidentId: string,
+    request: RemediationDecisionRequest,
+  ): RemediationDecisionResult {
+    const incident = this.#remediations.read(incidentId);
+    if (incident === undefined) {
+      throw new Error(`Incident ${incidentId} was not found`);
+    }
+    if (incident.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error(`Incident ${incidentId} is not awaiting approval`);
+    }
+    if (
+      !isDeepStrictEqual(
+        request.pendingDecision,
+        incident.remediation.pendingDecision,
+      )
+    ) {
+      throw new Error("Remediation decision does not match the pending action");
+    }
+    if (this.#activeDecision !== undefined) {
+      throw new Error("A Remediation decision is already running");
+    }
+    if (this.#active !== undefined) {
+      throw new Error("A Baseline Run is already running");
+    }
+
+    const decidedAt = new Date().toISOString();
+    const decisionEvidence = {
+      ...request.pendingDecision,
+      decidedAt,
+      decision: request.decision,
+    };
+    const existingApplication =
+      request.decision === "allow"
+        ? this.#policy.readApplication(request.pendingDecision.actionId)
+        : undefined;
+    if (
+      request.decision === "allow" &&
+      existingApplication === undefined &&
+      !policyMatchesRead(
+        this.#policy.read(),
+        incident.remediation.dryRun.base,
+      )
+    ) {
+      this.#remediations.stale(
+        incidentId,
+        { ...decisionEvidence, decision: "allow" },
+        this.#policy.read(),
+      );
+      return { started: false, state: "STALE" };
+    }
+
+    const controller = new AbortController();
+    const mcpAuthorization =
+      this.#remediations.readMcpAuthorization(incidentId);
+    const completion = (
+      existingApplication === undefined
+        ? this.#resolveDecision(
+            incidentId,
+            request,
+            decidedAt,
+            mcpAuthorization,
+            controller.signal,
+          )
+        : this.#resumeAppliedDecision(
+            incidentId,
+            incident.remediation,
+            request.pendingDecision,
+            existingApplication,
+            mcpAuthorization,
+            controller.signal,
+          )
+    ).finally(() => {
+      if (this.#activeDecision?.incidentId === incidentId) {
+        this.#activeDecision = undefined;
+      }
+    });
+    this.#activeDecision = {
+      completion,
+      controller,
+      incidentId,
+      mcpAuthorization,
+    };
+    void completion.catch(() => undefined);
+    return { started: true };
+  }
+
+  applyApprovedPolicyPatch(
+    sourceProposal: InvestigationProposal,
+  ): PolicyApplicationResult {
+    const proposal = investigationProposalSchema.parse(sourceProposal);
+    const pending = this.#pendingApplication;
+    if (pending === undefined) {
+      throw new Error("No approved Policy Patch action is being resumed");
+    }
+    if (!isDeepStrictEqual(proposal, pending.proposal)) {
+      throw new Error("Policy Patch call does not match the approved proposal");
+    }
+    return this.#policy.applyPatch(proposal.patch, pending.approval);
+  }
+
   isMcpAuthorized(authorization: string | undefined): boolean {
-    const capability = this.#active?.mcpAuthorization;
+    const capability =
+      this.#active?.mcpAuthorization ??
+      this.#activeDecision?.mcpAuthorization;
     if (capability === undefined || authorization === undefined) return false;
     const expected = Buffer.from(`Bearer ${capability}`);
     const received = Buffer.from(authorization);
@@ -147,9 +297,342 @@ export class IncidentCoordinator {
 
   async shutdown(): Promise<void> {
     const active = this.#active;
-    if (active === undefined) return;
-    active.controller.abort(new Error("BLACKBOX is shutting down"));
-    await active.completion;
+    const activeDecision = this.#activeDecision;
+    active?.controller.abort(new Error("BLACKBOX is shutting down"));
+    activeDecision?.controller.abort(new Error("BLACKBOX is shutting down"));
+    await Promise.all([active?.completion, activeDecision?.completion]);
+  }
+
+  async #resolveDecision(
+    incidentId: string,
+    request: RemediationDecisionRequest,
+    decidedAt: string,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const resolvePolicyAction = this.#runtime.resolvePolicyAction;
+    if (resolvePolicyAction === undefined) {
+      this.#remediations.validationFailed(
+        incidentId,
+        "TrueForge policy-action runtime is unavailable",
+        request.pendingDecision,
+      );
+      return;
+    }
+    const approval: PolicyApprovalEvidence = {
+      actionId: request.pendingDecision.actionId,
+      callId: request.pendingDecision.callId,
+      decidedAt,
+      sessionId: request.pendingDecision.sessionId,
+      threadId: request.pendingDecision.threadId,
+      turnId: request.pendingDecision.turnId,
+    };
+    const incident = this.#remediations.read(incidentId);
+    if (incident?.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error(`Incident ${incidentId} is not awaiting approval`);
+    }
+    const proposal = proposalFromRemediation(incident.remediation);
+    if (request.decision === "allow") {
+      this.#pendingApplication = { approval, incidentId, proposal };
+    }
+    try {
+      const resolution = policyActionResolutionSchema.parse(
+        await resolvePolicyAction({
+          decision: request.decision,
+          mcpAuthorization,
+          pendingDecision: request.pendingDecision,
+          signal,
+        }),
+      );
+      if (
+        resolution.decision !== request.decision ||
+        !isDeepStrictEqual(
+          resolution.pendingDecision,
+          request.pendingDecision,
+        )
+      ) {
+        throw new Error("TrueForge resumed a different pending action");
+      }
+      if (request.decision === "deny") {
+        this.#remediations.denied(
+          incidentId,
+          {
+            ...request.pendingDecision,
+            decidedAt,
+            decision: "deny",
+          },
+          this.#policy.read(),
+        );
+        return;
+      }
+      const application = this.#policy.readApplication(
+        request.pendingDecision.actionId,
+      );
+      if (application === undefined) {
+        const readback = this.#policy.read();
+        if (
+          !policyMatchesRead(readback, incident.remediation.dryRun.base)
+        ) {
+          this.#remediations.stale(
+            incidentId,
+            {
+              ...request.pendingDecision,
+              decidedAt,
+              decision: "allow",
+            },
+            readback,
+          );
+          return;
+        }
+        throw new Error(
+          "Approved apply_policy_patch produced no durable application",
+        );
+      }
+      if (application.status === "STALE") {
+        this.#remediations.stale(
+          incidentId,
+          {
+            ...request.pendingDecision,
+            decidedAt,
+            decision: "allow",
+          },
+          application.readback,
+        );
+        return;
+      }
+      const readback = validateAppliedPolicy(
+        this.#policy,
+        application,
+        approval,
+        incident.remediation,
+      );
+      this.#remediations.applied(
+        incidentId,
+        {
+          ...request.pendingDecision,
+          decidedAt,
+          decision: "allow",
+        },
+        readback,
+      );
+      this.#remediations.verifying(incidentId);
+      await this.#verifyRemediation(incidentId, mcpAuthorization, signal);
+    } catch (error) {
+      const applied = this.#policy.readApplication(
+        request.pendingDecision.actionId,
+      );
+      const current = this.#remediations.read(incidentId);
+      if (
+        request.decision === "allow" &&
+        applied !== undefined &&
+        applied.status !== "STALE" &&
+        current?.remediation.state === "AWAITING_APPROVAL"
+      ) {
+        try {
+          const readback = validateAppliedPolicy(
+            this.#policy,
+            applied,
+            approval,
+            current.remediation,
+          );
+          this.#remediations.applied(
+            incidentId,
+            {
+              ...request.pendingDecision,
+              decidedAt: applied.approval.decidedAt,
+              decision: "allow",
+            },
+            readback,
+          );
+        } catch {
+          // The original failure remains authoritative when reconciliation fails.
+        }
+      }
+      this.#remediations.validationFailed(
+        incidentId,
+        error instanceof Error
+          ? error.message
+          : "TrueForge policy-action resolution failed",
+        request.pendingDecision,
+      );
+    } finally {
+      if (this.#pendingApplication?.incidentId === incidentId) {
+        this.#pendingApplication = undefined;
+      }
+    }
+  }
+
+  async #resumeAppliedDecision(
+    incidentId: string,
+    remediation: AwaitingApprovalRemediation,
+    pendingDecision: RemediationDecisionRequest["pendingDecision"],
+    application: PolicyApplicationResult,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      if (application.status === "STALE") {
+        throw new Error("Persisted Policy application cannot be STALE");
+      }
+      const readback = validateAppliedPolicy(
+        this.#policy,
+        application,
+        {
+          actionId: pendingDecision.actionId,
+          callId: pendingDecision.callId,
+          decidedAt: application.approval.decidedAt,
+          sessionId: pendingDecision.sessionId,
+          threadId: pendingDecision.threadId,
+          turnId: pendingDecision.turnId,
+        },
+        remediation,
+      );
+      this.#remediations.applied(
+        incidentId,
+        {
+          ...pendingDecision,
+          decidedAt: application.approval.decidedAt,
+          decision: "allow",
+        },
+        readback,
+      );
+      this.#remediations.verifying(incidentId);
+      await this.#verifyRemediation(incidentId, mcpAuthorization, signal);
+    } catch (error) {
+      this.#remediations.validationFailed(
+        incidentId,
+        error instanceof Error
+          ? error.message
+          : "Persisted Policy application recovery failed",
+        pendingDecision,
+      );
+    }
+  }
+
+  async #verifyRemediation(
+    incidentId: string,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const incident = this.#remediations.read(incidentId);
+    if (incident?.remediation.state !== "VERIFYING") {
+      throw new Error(`Incident ${incidentId} is not verifying`);
+    }
+    const baseline = baselineEvidenceBundleSchema.parse(
+      this.#ledger.readBundle(incident.baseline.runId),
+    );
+    const executeReplay = this.#runtime.executeReplay;
+    const executeControl = this.#runtime.executeControl;
+    if (executeReplay === undefined || executeControl === undefined) {
+      throw new Error("TrueForge verification runtime is unavailable");
+    }
+
+    const replayManifest = createReplayRunManifest(
+      baseline.manifest,
+      randomUUID(),
+      `BLACKBOX-CANARY-${randomUUID()}`,
+      new Date().toISOString(),
+      this.#policy,
+    );
+    await this.#executeVerificationRun(
+      replayManifest,
+      executeReplay,
+      mcpAuthorization,
+      signal,
+    );
+    await waitForCutoff(50, signal);
+    this.#ledger.append([
+      {
+        id: `${replayManifest.runId}:sink-cutoff`,
+        occurredAt: new Date().toISOString(),
+        runId: replayManifest.runId,
+        source: "blackbox",
+        type: "sink.observation_cutoff",
+      },
+    ]);
+    const replay = this.#ledger.finalizeReplay(replayManifest.runId);
+    this.#remediations.recordReplay(incidentId, replayReference(replay));
+
+    const controlManifest = createControlRunManifest(
+      baseline.manifest,
+      randomUUID(),
+      `BLACKBOX-CANARY-${randomUUID()}`,
+      `BLACKBOX-CONTROL-RESPONSE-${randomUUID()}`,
+      new Date().toISOString(),
+      this.#policy,
+      this.#trustedDestination,
+    );
+    await this.#executeVerificationRun(
+      controlManifest,
+      executeControl,
+      mcpAuthorization,
+      signal,
+    );
+    const control = this.#ledger.finalizeControl(controlManifest.runId);
+    this.#remediations.recordControl(incidentId, controlReference(control));
+
+    if (
+      replay.verdict !== "PROTECTED" ||
+      !replay.completeness.complete ||
+      control.controlResult !== "PASSED" ||
+      !control.completeness.complete
+    ) {
+      throw new Error(
+        `Remediation verification evidence gates did not pass: replay=${replay.completeness.missing.join(",") || "complete"}; control=${control.completeness.missing.join(",") || "complete"}`,
+      );
+    }
+    this.#remediations.verified(incidentId);
+  }
+
+  async #executeVerificationRun(
+    manifest: RunManifest,
+    execute: NonNullable<TrueForgeRuntime["executeReplay"]>,
+    mcpAuthorization: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.#ledger.createRun(manifest);
+    this.#ledger.append([
+      stateRecord(manifest.runId, "PREPARING", manifest.createdAt),
+      stateRecord(manifest.runId, "EXECUTING", nextInstant(manifest.createdAt)),
+    ]);
+    let latestObservedAt = nextInstant(manifest.createdAt);
+    try {
+      const evidence = await execute({
+        mcpAuthorization,
+        runId: manifest.runId,
+        signal,
+      });
+      const records = baselineEvidenceRecords(manifest.runId, evidence);
+      this.#ledger.append(records);
+      latestObservedAt = records.reduce(
+        (latest, record) =>
+          record.occurredAt > latest ? record.occurredAt : latest,
+        latestObservedAt,
+      );
+    } catch (error) {
+      const failure =
+        error instanceof Error ? error : new Error("TrueForge Run failed");
+      const classified = classifyTrueForgeFailure(failure.message);
+      latestObservedAt = new Date().toISOString();
+      this.#ledger.append([
+        {
+          id: `${manifest.runId}:failed`,
+          message: classified.failure.message,
+          occurredAt: latestObservedAt,
+          runId: manifest.runId,
+          source: "blackbox",
+          stage: classified.stage,
+          type: "run.failed",
+        },
+      ]);
+    }
+    this.#ledger.append([
+      stateRecord(
+        manifest.runId,
+        "VERIFYING",
+        nextInstant(latestObservedAt),
+      ),
+    ]);
   }
 
   async #execute(
@@ -215,7 +698,7 @@ export class IncidentCoordinator {
   }
 
   async #investigate(
-    bundle: EvidenceBundle,
+    bundle: BaselineEvidenceBundle,
     mcpAuthorization: string,
     signal: AbortSignal,
   ): Promise<void> {
@@ -224,6 +707,7 @@ export class IncidentCoordinator {
       incidentId,
       bundle.manifest.runId,
       bundle.bundleHash,
+      mcpAuthorization,
     );
     const executeInvestigation = this.#runtime.executeInvestigation;
     if (executeInvestigation === undefined) {
@@ -272,6 +756,7 @@ export class IncidentCoordinator {
       actionId: evidence.pendingAction.actionId,
       callId: evidence.pendingAction.callId,
       sessionId: evidence.pendingAction.sessionId,
+      threadId: evidence.pendingAction.threadId,
       toolName: evidence.pendingAction.toolName,
       turnId: evidence.pendingAction.turnId,
     };
@@ -318,7 +803,7 @@ export class IncidentCoordinator {
 
 function validateInvestigationEvidence(
   evidence: ReturnType<typeof investigationExecutionEvidenceSchema.parse>,
-  bundle: EvidenceBundle,
+  bundle: BaselineEvidenceBundle,
   policy: ReturnType<CapabilityPolicy["read"]>,
   trustedDestination: string,
 ): void {
@@ -355,6 +840,88 @@ function validateInvestigationEvidence(
   ) {
     throw new Error("Daytona analysis artifact did not prove the diagnosis");
   }
+}
+
+function proposalFromRemediation(
+  remediation: AwaitingApprovalRemediation,
+): InvestigationProposal {
+  return investigationProposalSchema.parse({
+    canonicalCause: remediation.diagnosis.canonicalCause,
+    evidenceJustification: remediation.evidenceJustification,
+    patch: {
+      destinationAllowlist:
+        remediation.dryRun.candidate.rules.send_external_message.destinations,
+      expectedBaseHash: remediation.dryRun.base.hash,
+      expectedBaseVersion: remediation.dryRun.base.version,
+    },
+  });
+}
+
+function validateAppliedPolicy(
+  policy: CapabilityPolicy,
+  application: Exclude<PolicyApplicationResult, { status: "STALE" }>,
+  approval: PolicyApprovalEvidence,
+  remediation: AwaitingApprovalRemediation,
+): PolicyRead {
+  if (!isDeepStrictEqual(application.approval, approval)) {
+    throw new Error("Persisted Policy application approval evidence mismatched");
+  }
+  const readback = policy.read();
+  if (
+    !isDeepStrictEqual(readback, application.readback) ||
+    readback.hash !== remediation.dryRun.candidateHash ||
+    readback.version !== remediation.dryRun.candidate.version
+  ) {
+    throw new Error("Applied Capability Policy readback did not match dry-run");
+  }
+  return readback;
+}
+
+function policyMatchesRead(
+  policy: PolicyRead,
+  expected: { hash: string; version: number },
+): boolean {
+  return policy.hash === expected.hash && policy.version === expected.version;
+}
+
+function replayReference(replay: ReplayEvidenceBundle) {
+  return {
+    bundleHash: replay.bundleHash,
+    complete: replay.completeness.complete,
+    runId: replay.manifest.runId,
+    verdict: replay.verdict,
+  };
+}
+
+function controlReference(control: ControlEvidenceBundle) {
+  return {
+    bundleHash: control.bundleHash,
+    complete: control.completeness.complete,
+    controlResult: control.controlResult,
+    runId: control.manifest.runId,
+  };
+}
+
+async function waitForCutoff(
+  milliseconds: number,
+  signal: AbortSignal,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const complete = (): void => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = (): void => {
+      clearTimeout(timeout);
+      reject(signal.reason);
+    };
+    const timeout = setTimeout(complete, milliseconds);
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function sha256(value: string): string {
