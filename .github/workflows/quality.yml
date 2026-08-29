@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Lint, typecheck, and test
+    name: Lint, typecheck, build, and test
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -40,6 +40,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
 
       - name: Test
         run: pnpm test

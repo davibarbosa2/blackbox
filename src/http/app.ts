@@ -7,6 +7,7 @@ import {
   localhostAllowedOrigins,
   originValidationResponse,
 } from "@modelcontextprotocol/server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import type { EvlogVariables } from "evlog/hono";
 import { Hono } from "hono";
 
@@ -173,6 +174,19 @@ function buildApp(
   app.get("/healthz", (context) => context.json({ status: "ok" }));
 
   if (incident !== undefined) {
+    app.use(
+      "/assets/*",
+      serveStatic({
+        onFound: (_path, context) => {
+          context.header("Cache-Control", "public, max-age=31536000, immutable");
+        },
+        root: "./dist/mission-control",
+      }),
+    );
+    app.get(
+      "/",
+      serveStatic({ path: "./dist/mission-control/index.html" }),
+    );
     app.all("/mcp", (context) => {
       const request = context.req.raw;
       const rejected =

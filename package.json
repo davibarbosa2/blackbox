@@ -12,6 +12,9 @@
     "accept:baseline": "tsx src/cli/baseline-acceptance.ts",
     "accept:investigation": "tsx src/cli/investigation-acceptance.ts",
     "accept:remediation": "tsx src/cli/remediation-acceptance.ts",
+    "build": "vite build",
+    "demo": "pnpm build && tsx src/main.ts --open",
+    "dev:mission-control": "vite",
     "lint": "oxlint",
     "smoke:runtime": "tsx src/cli/runtime-smoke.ts",
     "start": "tsx src/main.ts",
@@ -29,15 +32,22 @@
     "dotenv": "17.4.2",
     "evlog": "2.27.1",
     "hono": "4.13.4",
+    "open": "11.0.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",
     "@oxlint/plugins": "1.80.0",
     "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.1",
     "oxlint": "1.80.0",
     "tsx": "4.23.12",
     "typescript": "7.0.2",
+    "vite": "8.2.2",
     "vitest": "4.1.11"
   }
 }

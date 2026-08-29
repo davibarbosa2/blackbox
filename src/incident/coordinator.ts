@@ -12,10 +12,8 @@ import type {
 } from "../evidence/ledger.js";
 import { baselineEvidenceBundleSchema } from "../evidence/ledger.js";
 import { classifyTrueForgeFailure } from "../failure.js";
-import {
-  createMissionControlSnapshot,
-  type MissionControlSnapshot,
-} from "../mission-control/snapshot.js";
+import type { MissionControlSnapshot } from "../mission-control/schema.js";
+import { createMissionControlSnapshot } from "../mission-control/snapshot.js";
 import type {
   CapabilityPolicy,
   PolicyApplicationResult,

@@ -797,25 +797,13 @@ describe("Baseline Run product HTTP API", () => {
     await expect(missionControl.json()).resolves.toMatchObject({
       comparison: { containment: null },
       failure: {
-        detail: "Approved apply_policy_patch produced no durable application",
+        detail:
+          "The approved Capability Policy change could not be validated. Containment is withheld; inspect the server log for the private cause.",
         title: "Remediation validation failed",
       },
       phase: "RESULT",
       status: "VALIDATION_FAILED",
-      verification: {
-        control: {
-          result: "PASSED",
-          state: "COMPLETED",
-        },
-        policyReadback: {
-          state: "MATCHED",
-          version: 2,
-        },
-        replay: {
-          result: "INCONCLUSIVE",
-          state: "COMPLETED",
-        },
-      },
+      verification: null,
     });
     const persistedPolicy = createSqliteCapabilityPolicy(
       join(runtimeDirectory, "blackbox.sqlite"),
@@ -1041,7 +1029,9 @@ describe("Baseline Run product HTTP API", () => {
     const baseUrl = `http://127.0.0.1:${port}`;
     const trueForgeRuntime = createApplyingRemediationRuntime(baseUrl);
     trueForgeRuntime.executeReplay = async () => {
-      throw new Error("Replay infrastructure failed");
+      throw new Error(
+        "Replay infrastructure failed with bearer browser-secret-must-not-leak",
+      );
     };
     trueForgeRuntime.executeControl = trueForgeRuntime.executeBaseline;
     const application = createBlackboxApplication({
@@ -1102,7 +1092,8 @@ describe("Baseline Run product HTTP API", () => {
     });
     const missionControlResponse = await fetch(`${baseUrl}/api/mission-control`);
     expect(missionControlResponse.status).toBe(200);
-    await expect(missionControlResponse.json()).resolves.toMatchObject({
+    const missionControl = await missionControlResponse.json();
+    expect(missionControl).toMatchObject({
       comparison: {
         containment: null,
         control: { complete: true, result: "PASSED" },
@@ -1117,6 +1108,9 @@ describe("Baseline Run product HTTP API", () => {
       phase: "RESULT",
       status: "VALIDATION_FAILED",
     });
+    expect(JSON.stringify(missionControl)).not.toContain(
+      "browser-secret-must-not-leak",
+    );
     const persistedPolicy = createSqliteCapabilityPolicy(
       join(runtimeDirectory, "blackbox.sqlite"),
       [`${baseUrl}/api/trusted-destination`],
@@ -1397,8 +1391,7 @@ function fakeInvestigationEvidence(
         evidenceJustification: {
           bundleHash: request.bundle.bundleHash,
           runId: request.bundle.manifest.runId,
-          summary:
-            "The exact Canary Secret reached the correlated External Sink.",
+          summary: `The exact Canary ${request.bundle.manifest.canarySecret} reached the correlated External Sink.`,
         },
         patch: {
           destinationAllowlist: [request.trustedDestination],

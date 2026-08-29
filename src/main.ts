@@ -1,5 +1,7 @@
 import "dotenv/config";
 
+import openBrowser from "open";
+
 import { parseRuntimeConfig } from "./config.js";
 import { startBlackboxServer } from "./server.js";
 
@@ -21,6 +23,9 @@ async function main(): Promise<void> {
       await writeOutput(
         `${JSON.stringify({ event: "blackbox.ready", url: server.url })}\n`,
       );
+      if (process.argv.includes("--open")) {
+        await openBrowser(server.url);
+      }
       await shutdown.wait;
     }
   } finally {

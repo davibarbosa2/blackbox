@@ -1,5 +1,3 @@
-import { z } from "zod";
-
 import {
   baselineEvidenceBundleSchema,
   type BaselineEvidenceBundle,
@@ -11,96 +9,14 @@ import {
   replayEvidenceBundleSchema,
   type ReplayEvidenceBundle,
 } from "../evidence/ledger.js";
-import { policyPatchDryRunSchema } from "../policy/capability-policy.js";
 import type { DurableIncidentRead } from "../remediation/store.js";
 import {
-  evidenceJustificationSchema,
-  pendingPolicyDecisionSchema,
-} from "../trueforge/runtime.js";
-
-const evidenceReferenceSchema = z.strictObject({
-  bundleHash: z.string().length(64),
-  url: z.string(),
-});
-
-const activitySchema = z.strictObject({
-  detail: z.string().nullable(),
-  evidence: evidenceReferenceSchema.nullable(),
-  id: z.string(),
-  kind: z.enum([
-    "phase",
-    "tool",
-    "evidence",
-    "subagent",
-    "sandbox",
-    "failure",
-  ]),
-  occurredAt: z.string().nullable(),
-  source: z.enum([
-    "BLACKBOX",
-    "TRUEFORGE",
-    "DAYTONA",
-    "CAPABILITY_POLICY",
-    "EXTERNAL_SINK",
-  ]),
-  status: z.enum(["ACTIVE", "COMPLETED", "FAILED"]),
-  title: z.string(),
-});
-
-const baselineSummarySchema = z.strictObject({
-  bundleHash: z.string().length(64),
-  complete: z.boolean(),
-  evidenceUrl: z.string(),
-  runId: z.string(),
-  verdict: z.enum(["VULNERABLE", "INCONCLUSIVE"]),
-});
-
-const comparisonSchema = z.strictObject({
-  baseline: z.strictObject({
-    bundleHash: z.string().length(64),
-    complete: z.boolean(),
-    evidenceUrl: z.string(),
-    exactCanaryReceipts: z.number().int().nonnegative(),
-    result: z.enum(["VULNERABLE", "INCONCLUSIVE"]),
-    runId: z.string(),
-  }),
-  containment: z
-    .strictObject({
-      claim: z.literal("VERIFIED_REMEDIATION"),
-      evidence: z.tuple([
-        evidenceReferenceSchema,
-        evidenceReferenceSchema,
-        evidenceReferenceSchema,
-      ]),
-    })
-    .nullable(),
-  control: z
-    .strictObject({
-      bundleHash: z.string().length(64),
-      complete: z.boolean(),
-      evidenceUrl: z.string(),
-      result: z.enum(["PASSED", "INCONCLUSIVE"]),
-      runId: z.string(),
-      trustedDestinationReceipts: z.number().int().nonnegative(),
-    })
-    .nullable(),
-  replay: z
-    .strictObject({
-      bundleHash: z.string().length(64),
-      complete: z.boolean(),
-      evidenceUrl: z.string(),
-      explicitPolicyDenial: z.boolean(),
-      matchingCanaryReceipts: z.number().int().nonnegative(),
-      result: z.enum(["PROTECTED", "INCONCLUSIVE"]),
-      runId: z.string(),
-    })
-    .nullable(),
-});
-
-const approvalSchema = policyPatchDryRunSchema.extend({
-  evidenceJustification: evidenceJustificationSchema,
-  pendingDecision: pendingPolicyDecisionSchema,
-});
+  type EvidenceReference,
+  type MissionControlActivity,
+  type MissionControlComparison,
+  type MissionControlSnapshot,
+  missionControlSnapshotSchema,
+} from "./schema.js";
 
 const REPLAY_EQUIVALENT_FINGERPRINTS = [
   "agent",
@@ -109,72 +25,6 @@ const REPLAY_EQUIVALENT_FINGERPRINTS = [
   "tools",
 ] as const;
 const CONTROL_EQUIVALENT_FINGERPRINTS = ["agent", "model", "tools"] as const;
-
-const verificationSchema = z.strictObject({
-  control: z.strictObject({
-    result: z.enum(["PASSED", "INCONCLUSIVE"]).nullable(),
-    runId: z.string().nullable(),
-    state: z.enum(["WAITING", "ACTIVE", "COMPLETED"]),
-  }),
-  policyReadback: z.strictObject({
-    hash: z.string().length(64),
-    state: z.literal("MATCHED"),
-    version: z.number().int().positive(),
-  }),
-  replay: z.strictObject({
-    result: z.enum(["PROTECTED", "INCONCLUSIVE"]).nullable(),
-    runId: z.string().nullable(),
-    state: z.enum(["WAITING", "ACTIVE", "COMPLETED"]),
-  }),
-});
-
-export const missionControlSnapshotSchema = z.strictObject({
-  activity: z.array(activitySchema),
-  approval: approvalSchema.nullable(),
-  baseline: baselineSummarySchema.nullable(),
-  comparison: comparisonSchema.nullable(),
-  decisionPending: z.boolean(),
-  failure: z
-    .strictObject({
-      detail: z.string(),
-      title: z.string(),
-    })
-    .nullable(),
-  incident: z
-    .strictObject({
-      id: z.string(),
-      status: z.enum(["OPEN", "RESOLVED"]),
-    })
-    .nullable(),
-  phase: z.enum([
-    "READY",
-    "BASELINE",
-    "INVESTIGATION",
-    "APPROVAL",
-    "VERIFICATION",
-    "RESULT",
-  ]),
-  status: z.enum([
-    "READY",
-    "BASELINE_RUNNING",
-    "BASELINE_INCONCLUSIVE",
-    "INVESTIGATING",
-    "DRAFTED",
-    "DRY_RUN_PASSED",
-    "AWAITING_APPROVAL",
-    "DENIED",
-    "STALE",
-    "APPLIED",
-    "VERIFYING",
-    "VERIFIED",
-    "VALIDATION_FAILED",
-  ]),
-  verification: verificationSchema.nullable(),
-});
-
-export type MissionControlSnapshot = z.infer<
-  typeof missionControlSnapshotSchema
->;
 
 export function createMissionControlSnapshot(
   baselineRun: EvidenceRunRead | undefined,
@@ -225,7 +75,12 @@ export function createMissionControlSnapshot(
       remediation?.state === "AWAITING_APPROVAL"
         ? {
             ...remediation.dryRun,
-            evidenceJustification: remediation.evidenceJustification,
+            evidenceJustification: {
+              bundleHash: remediation.evidenceJustification.bundleHash,
+              runId: remediation.evidenceJustification.runId,
+              summary:
+                "The finalized Baseline Evidence Bundle proves an exact run-scoped Canary receipt at the controlled External Sink through send_external_message.",
+            },
             pendingDecision: remediation.pendingDecision,
           }
         : null,
@@ -277,7 +132,7 @@ function readControlBundle(
 
 function evidenceReference(
   bundle: EvidenceBundle | undefined,
-): z.infer<typeof evidenceReferenceSchema> | null {
+): EvidenceReference | null {
   return bundle === undefined
     ? null
     : {
@@ -288,12 +143,19 @@ function evidenceReference(
 
 function timelineActivity(
   timeline: readonly EvidenceRecord[],
-  evidence: z.infer<typeof evidenceReferenceSchema> | null,
+  evidence: EvidenceReference | null,
   finalizedTitle: string,
-): z.infer<typeof activitySchema>[] {
-  const activity: z.infer<typeof activitySchema>[] = [];
+): MissionControlActivity[] {
+  const activity: MissionControlActivity[] = [];
+  const currentStateId = timeline
+    .filter((record) => record.type === "run.state_changed")
+    .at(-1)?.id;
   for (const record of timeline) {
-    const item = activityFromRecord(record, evidence);
+    const item = activityFromRecord(
+      record,
+      evidence,
+      record.id === currentStateId,
+    );
     if (item !== undefined) activity.push(item);
   }
   if (evidence !== null) {
@@ -313,8 +175,9 @@ function timelineActivity(
 
 function activityFromRecord(
   record: EvidenceRecord,
-  evidence: z.infer<typeof evidenceReferenceSchema> | null,
-): z.infer<typeof activitySchema> | undefined {
+  evidence: EvidenceReference | null,
+  currentState: boolean,
+): MissionControlActivity | undefined {
   if (record.type === "run.state_changed") {
     const title = {
       COMPLETED: "Run evidence finalized",
@@ -329,7 +192,10 @@ function activityFromRecord(
       kind: "phase",
       occurredAt: record.occurredAt,
       source: "BLACKBOX",
-      status: record.state === "COMPLETED" ? "COMPLETED" : "ACTIVE",
+      status:
+        record.state === "COMPLETED" || !currentState
+          ? "COMPLETED"
+          : "ACTIVE",
       title,
     };
   }
@@ -364,7 +230,7 @@ function activityFromRecord(
       id: record.id,
       kind: "evidence",
       occurredAt: record.occurredAt,
-      source: "EXTERNAL_SINK",
+      source: "TRUSTED_DESTINATION",
       status: "COMPLETED",
       title: "Trusted workflow receipt recorded",
     };
@@ -395,7 +261,7 @@ function activityFromRecord(
   }
   if (record.type === "run.failed") {
     return {
-      detail: `${record.stage}: ${record.message}`,
+      detail: `${record.stage}: the Run could not complete at this infrastructure boundary.`,
       evidence,
       id: record.id,
       kind: "failure",
@@ -410,8 +276,8 @@ function activityFromRecord(
 
 function remediationActivity(
   incident: DurableIncidentRead | undefined,
-  evidence: z.infer<typeof evidenceReferenceSchema> | null,
-): z.infer<typeof activitySchema>[] {
+  evidence: EvidenceReference | null,
+): MissionControlActivity[] {
   if (incident?.remediation.state !== "AWAITING_APPROVAL") return [];
   const remediation = incident.remediation;
   const subagents = remediation.subagents.map((subagent) => ({
@@ -494,7 +360,7 @@ function verifiedEvidence(
   baseline: BaselineEvidenceBundle,
   replay: ReplayEvidenceBundle | undefined,
   control: ControlEvidenceBundle | undefined,
-): z.infer<typeof comparisonSchema>["containment"] {
+): MissionControlComparison["containment"] {
   if (
     incident?.remediation.state !== "VERIFIED" ||
     incident.incidentStatus !== "RESOLVED" ||
@@ -653,7 +519,7 @@ function readFailure(
 ): MissionControlSnapshot["failure"] {
   if (incident?.remediation.state === "VALIDATION_FAILED") {
     return {
-      detail: incident.remediation.error,
+      detail: safeValidationFailure(incident.remediation.error),
       title: "Remediation validation failed",
     };
   }
@@ -687,6 +553,30 @@ function readFailure(
     };
   }
   return null;
+}
+
+function safeValidationFailure(error: string): string {
+  const category = error.toLowerCase();
+  if (category.includes("replay")) {
+    return "The automatic Attack Replay did not complete its evidence gates. Containment is withheld; inspect the server log for the private cause.";
+  }
+  if (category.includes("control")) {
+    return "The legitimate Control Run did not complete its evidence gates. Containment is withheld; inspect the server log for the private cause.";
+  }
+  if (
+    category.includes("policy") ||
+    category.includes("patch") ||
+    category.includes("application")
+  ) {
+    return "The approved Capability Policy change could not be validated. Containment is withheld; inspect the server log for the private cause.";
+  }
+  if (
+    category.includes("trueforge") ||
+    category.includes("investigation")
+  ) {
+    return "TrueForge did not complete the investigation boundary. No policy success is implied; inspect the server log for the private cause.";
+  }
+  return "Automatic Remediation validation did not complete. Containment is withheld; inspect the server log for the private cause.";
 }
 
 function phaseForStatus(
