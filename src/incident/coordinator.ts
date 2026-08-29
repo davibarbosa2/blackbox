@@ -126,6 +126,10 @@ export class IncidentCoordinator {
     this.#observeBaselineRun = options.observeBaselineRun;
   }
 
+  recover(): void {
+    this.#resumeUnmatchedBaseline();
+  }
+
   start(): StartIncidentResult {
     if (this.#active !== undefined) {
       return { activeRunId: this.#active.runId, started: false };
@@ -137,6 +141,17 @@ export class IncidentCoordinator {
           incident?.baseline.runId ?? this.#activeDecision.incidentId,
         started: false,
       };
+    }
+    const durableBaseline = this.#ledger.readLatestRun("baseline");
+    if (durableBaseline !== undefined && durableBaseline.bundle === undefined) {
+      return { activeRunId: durableBaseline.manifest.runId, started: false };
+    }
+    const durableIncident = this.#remediations.readLatest();
+    if (
+      durableIncident !== undefined &&
+      isDurableWorkInProgress(durableIncident)
+    ) {
+      return { activeRunId: durableIncident.baseline.runId, started: false };
     }
 
     const incidentId = randomUUID();
@@ -183,7 +198,7 @@ export class IncidentCoordinator {
   read(runId: string): RunRead | undefined {
     const bundle = this.#ledger.readBundle(runId);
     if (bundle !== undefined) return { bundle, status: "completed" };
-    if (this.#active?.runId === runId) return { status: "running" };
+    if (this.#ledger.readRun(runId) !== undefined) return { status: "running" };
     return undefined;
   }
 
@@ -193,29 +208,35 @@ export class IncidentCoordinator {
 
   readMissionControl(): MissionControlSnapshot {
     const current = this.#current;
-    const incident =
+    const baselineRun =
+      current === undefined
+        ? this.#ledger.readLatestRun("baseline")
+        : this.#ledger.readRun(current.runId);
+    const runId = baselineRun?.manifest.runId ?? current?.runId;
+    const candidateIncident =
       current === undefined
         ? this.#remediations.readLatest()
         : this.#remediations.read(current.incidentId);
-    const runId = current?.runId ?? incident?.baseline.runId;
-    const baselineRun =
-      runId === undefined ? undefined : this.#ledger.readRun?.(runId);
+    const incident =
+      candidateIncident?.baseline.runId === runId
+        ? candidateIncident
+        : undefined;
     const replayRunId = verificationRunId(incident, "replay");
     const controlRunId = verificationRunId(incident, "control");
     const replayRun =
       replayRunId === undefined
         ? undefined
-        : this.#ledger.readRun?.(replayRunId);
+        : this.#ledger.readRun(replayRunId);
     const controlRun =
       controlRunId === undefined
         ? undefined
-        : this.#ledger.readRun?.(controlRunId);
+        : this.#ledger.readRun(controlRunId);
     return createMissionControlSnapshot(
       baselineRun,
       replayRun,
       controlRun,
       incident,
-      runId !== undefined && this.#active?.runId === runId,
+      baselineRun !== undefined && baselineRun.bundle === undefined,
       incident !== undefined &&
         this.#activeDecision?.incidentId === incident.incidentId,
     );
@@ -736,6 +757,34 @@ export class IncidentCoordinator {
     }
   }
 
+  #resumeUnmatchedBaseline(): void {
+    const run = this.#ledger.readLatestRun("baseline");
+    if (run?.bundle?.manifest.kind !== "baseline") {
+      return;
+    }
+
+    const bundle = baselineEvidenceBundleSchema.parse(run.bundle);
+    if (
+      bundle.verdict !== "VULNERABLE" ||
+      this.#remediations.read(bundle.manifest.incidentId) !== undefined
+    ) {
+      return;
+    }
+    const runId = bundle.manifest.runId;
+    const mcpAuthorization = randomBytes(32).toString("base64url");
+    const controller = new AbortController();
+    this.#current = { incidentId: bundle.manifest.incidentId, runId };
+    const completion = this.#investigate(
+      bundle,
+      mcpAuthorization,
+      controller.signal,
+    ).finally(() => {
+      if (this.#active?.runId === runId) this.#active = undefined;
+    });
+    this.#active = { completion, controller, mcpAuthorization, runId };
+    void completion.catch(() => undefined);
+  }
+
   async #investigate(
     bundle: BaselineEvidenceBundle,
     mcpAuthorization: string,
@@ -838,6 +887,17 @@ export class IncidentCoordinator {
       return undefined;
     }
   }
+}
+
+function isDurableWorkInProgress(incident: DurableIncidentRead): boolean {
+  return (
+    incident.remediation.state === "INVESTIGATING" ||
+    incident.remediation.state === "DRAFTED" ||
+    incident.remediation.state === "DRY_RUN_PASSED" ||
+    incident.remediation.state === "AWAITING_APPROVAL" ||
+    incident.remediation.state === "APPLIED" ||
+    incident.remediation.state === "VERIFYING"
+  );
 }
 
 function verificationRunId(

@@ -52,6 +52,7 @@ interface BlackboxAppOptions {
 
 export interface BlackboxApplication {
   app: Hono<EvlogVariables>;
+  recover(): void;
   shutdown(): Promise<void>;
 }
 
@@ -79,6 +80,9 @@ export function createBlackboxApplication(
     : undefined;
   return {
     app: buildApp(coordinator, incident, options.observability),
+    recover(): void {
+      incident?.coordinator.recover();
+    },
     async shutdown(): Promise<void> {
       await Promise.all([coordinator.shutdown(), incident?.shutdown()]);
     },

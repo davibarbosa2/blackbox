@@ -65,6 +65,7 @@ const controlVerificationSchema = z.object({
 });
 
 const validationFailedSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: z.lazy(() => remediationDecisionEvidenceSchema).optional(),
   dryRun: policyPatchDryRunSchema.optional(),
   error: z.string(),
@@ -78,6 +79,9 @@ const validationFailedSchema = z.object({
     })
     .optional(),
   state: z.literal("VALIDATION_FAILED"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const awaitingApprovalSchema = z.object({
@@ -107,6 +111,7 @@ export type RemediationDecisionRequest = z.infer<
 >;
 
 const deniedSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: remediationDecisionEvidenceSchema.extend({
     decision: z.literal("deny"),
   }),
@@ -114,9 +119,13 @@ const deniedSchema = z.object({
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("DENIED"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const staleSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: remediationDecisionEvidenceSchema.extend({
     decision: z.literal("allow"),
   }),
@@ -124,9 +133,13 @@ const staleSchema = z.object({
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("STALE"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const appliedSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: remediationDecisionEvidenceSchema.extend({
     decision: z.literal("allow"),
   }),
@@ -134,6 +147,9 @@ const appliedSchema = z.object({
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("APPLIED"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const verifyingSchema = appliedSchema.extend({
@@ -290,11 +306,13 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not awaiting approval`);
     }
     return this.#update(current, {
+      analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
       lifecycle: appendLifecycle(current, "DENIED"),
       policyReadback,
       state: "DENIED",
+      subagents: current.remediation.subagents,
     });
   }
 
@@ -309,11 +327,13 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not awaiting approval`);
     }
     return this.#update(current, {
+      analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
       lifecycle: appendLifecycle(current, "STALE"),
       policyReadback,
       state: "STALE",
+      subagents: current.remediation.subagents,
     });
   }
 
@@ -334,11 +354,13 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not awaiting approval`);
     }
     return this.#update(current, {
+      analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
       lifecycle: appendLifecycle(current, "APPLIED"),
       policyReadback,
       state: "APPLIED",
+      subagents: current.remediation.subagents,
     });
   }
 
@@ -481,6 +503,18 @@ export class SqliteRemediationStore {
     }
     if (current.remediation.state === "VERIFYING") {
       failure.verification = current.remediation.verification;
+    }
+    if (
+      "analysis" in current.remediation &&
+      current.remediation.analysis !== undefined
+    ) {
+      failure.analysis = current.remediation.analysis;
+    }
+    if (
+      "subagents" in current.remediation &&
+      current.remediation.subagents !== undefined
+    ) {
+      failure.subagents = current.remediation.subagents;
     }
     return this.#update(current, failure);
   }

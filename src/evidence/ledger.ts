@@ -221,8 +221,9 @@ export interface EvidenceLedger {
   finalizeControl(runId: string): ControlEvidenceBundle;
   finalizeReplay(runId: string): ReplayEvidenceBundle;
   readBundle(runId: string): EvidenceBundle | undefined;
+  readLatestRun(kind: RunManifest["kind"]): EvidenceRunRead | undefined;
   readManifest(runId: string): RunManifest;
-  readRun?(runId: string): EvidenceRunRead | undefined;
+  readRun(runId: string): EvidenceRunRead | undefined;
 }
 
 interface PreparedFinalization {
@@ -432,6 +433,19 @@ export class SqliteEvidenceLedger implements EvidenceLedger {
       throw new Error(`Evidence Bundle for Run ${runId} failed hash validation`);
     }
     return bundle;
+  }
+
+  readLatestRun(kind: RunManifest["kind"]): EvidenceRunRead | undefined {
+    const rows = this.#database
+      .prepare("SELECT manifest_json FROM evidence_runs ORDER BY rowid DESC")
+      .all();
+    for (const row of rows) {
+      const parsed = manifestRowSchema.parse(row);
+      const manifest = runManifestSchema.parse(JSON.parse(parsed.manifest_json));
+      if (manifest.kind !== kind) continue;
+      return this.readRun(manifest.runId);
+    }
+    return undefined;
   }
 
   readManifest(runId: string): RunManifest {

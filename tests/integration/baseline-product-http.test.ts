@@ -112,7 +112,33 @@ describe("Baseline Run product HTTP API", () => {
       status: "BASELINE_RUNNING",
     });
 
+    const reconnected = createBlackboxApplication({
+      incident: {
+        baseUrl: "http://127.0.0.1:3000",
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime: {
+        executeBaseline: () => new Promise(() => undefined),
+        executeSmoke: () => new Promise(() => undefined),
+      },
+    });
+    const reconstructed = await reconnected.app.request(
+      "/api/mission-control",
+    );
+    expect(reconstructed.status).toBe(200);
+    await expect(reconstructed.json()).resolves.toMatchObject({
+      incident: { id: started.incidentId, status: "OPEN" },
+      phase: "BASELINE",
+      status: "BASELINE_RUNNING",
+    });
+    const duplicate = await reconnected.app.request("/api/incidents", {
+      method: "POST",
+    });
     releaseBaseline();
+    await reconnected.shutdown();
+    expect(duplicate.status).toBe(409);
     await vi.waitFor(async () => {
       const failedResponse = await application.app.request(
         "/api/mission-control",
@@ -321,18 +347,21 @@ describe("Baseline Run product HTTP API", () => {
           title: "get_support_ticket",
         }),
         expect.objectContaining({
+          evidence: null,
           kind: "subagent",
           source: "TRUEFORGE",
           status: "COMPLETED",
           title: "Policy Patch Reviewer",
         }),
         expect.objectContaining({
+          evidence: null,
           kind: "subagent",
           source: "TRUEFORGE",
           status: "COMPLETED",
           title: "Evidence Provenance Verifier",
         }),
         expect.objectContaining({
+          evidence: null,
           kind: "sandbox",
           source: "DAYTONA",
           status: "COMPLETED",
@@ -436,6 +465,10 @@ describe("Baseline Run product HTTP API", () => {
       phase: "APPROVAL",
       status: "AWAITING_APPROVAL",
     });
+    const duplicate = await reconnected.app.request("/api/incidents", {
+      method: "POST",
+    });
+    expect(duplicate.status).toBe(409);
     await reconnected.shutdown();
   });
 
@@ -528,6 +561,23 @@ describe("Baseline Run product HTTP API", () => {
     const missionControl = await fetch(`${baseUrl}/api/mission-control`);
     expect(missionControl.status).toBe(200);
     await expect(missionControl.json()).resolves.toMatchObject({
+      activity: expect.arrayContaining([
+        expect.objectContaining({
+          evidence: null,
+          kind: "subagent",
+          title: "Policy Patch Reviewer",
+        }),
+        expect.objectContaining({
+          evidence: null,
+          kind: "subagent",
+          title: "Evidence Provenance Verifier",
+        }),
+        expect.objectContaining({
+          evidence: null,
+          kind: "sandbox",
+          title: "Sandbox analysis completed",
+        }),
+      ]),
       approval: null,
       comparison: { containment: null },
       failure: {
@@ -906,7 +956,7 @@ describe("Baseline Run product HTTP API", () => {
     expect(resolvePolicyAction).not.toHaveBeenCalled();
   });
 
-  it("serializes Baseline Runs and Remediation decisions in both directions", async () => {
+  it("serializes starts across approval, decision, and Baseline execution", async () => {
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-serial-"));
     cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
     const port = await findAvailablePort();
@@ -960,6 +1010,38 @@ describe("Baseline Run product HTTP API", () => {
     if (firstAwaiting.remediation.state !== "AWAITING_APPROVAL") {
       throw new Error("First Incident is not awaiting approval");
     }
+    const blockedByApproval = await fetch(`${baseUrl}/api/incidents`, {
+      method: "POST",
+    });
+    expect(blockedByApproval.status).toBe(409);
+
+    const denial = await fetch(
+      `${baseUrl}/api/incidents/${first.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "deny",
+          pendingDecision: firstAwaiting.remediation.pendingDecision,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(denial.status).toBe(202);
+    const pendingDecision = await fetch(`${baseUrl}/api/mission-control`);
+    expect(pendingDecision.status).toBe(200);
+    await expect(pendingDecision.json()).resolves.toMatchObject({
+      approval: { pendingDecision: firstAwaiting.remediation.pendingDecision },
+      decisionPending: true,
+      phase: "APPROVAL",
+      status: "AWAITING_APPROVAL",
+    });
+    const blockedByDecision = await fetch(`${baseUrl}/api/incidents`, {
+      method: "POST",
+    });
+    expect(blockedByDecision.status).toBe(409);
+    releaseDecision();
+    await waitForIncidentState(baseUrl, first.manifest.incidentId, "DENIED");
+
     const executeBaseline = trueForgeRuntime.executeBaseline;
     trueForgeRuntime.executeBaseline = async (request) => {
       await baselineGate;
@@ -972,54 +1054,12 @@ describe("Baseline Run product HTTP API", () => {
     const second = z
       .object({ incidentId: z.string(), runId: z.string() })
       .parse(await secondStart.json());
-    const blockedDecision = await fetch(
-      `${baseUrl}/api/incidents/${first.manifest.incidentId}/remediation-decisions`,
-      {
-        body: JSON.stringify({
-          decision: "deny",
-          pendingDecision: firstAwaiting.remediation.pendingDecision,
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      },
-    );
-    expect(blockedDecision.status).toBe(409);
-    releaseBaseline();
-
-    const secondAwaiting = await waitForIncidentState(
-      baseUrl,
-      second.incidentId,
-      "AWAITING_APPROVAL",
-    );
-    if (secondAwaiting.remediation.state !== "AWAITING_APPROVAL") {
-      throw new Error("Second Incident is not awaiting approval");
-    }
-    const denial = await fetch(
-      `${baseUrl}/api/incidents/${second.incidentId}/remediation-decisions`,
-      {
-        body: JSON.stringify({
-          decision: "deny",
-          pendingDecision: secondAwaiting.remediation.pendingDecision,
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      },
-    );
-    expect(denial.status).toBe(202);
-    const pendingDecision = await fetch(`${baseUrl}/api/mission-control`);
-    expect(pendingDecision.status).toBe(200);
-    await expect(pendingDecision.json()).resolves.toMatchObject({
-      approval: { pendingDecision: secondAwaiting.remediation.pendingDecision },
-      decisionPending: true,
-      phase: "APPROVAL",
-      status: "AWAITING_APPROVAL",
-    });
-    const blockedStart = await fetch(`${baseUrl}/api/incidents`, {
+    const blockedByBaseline = await fetch(`${baseUrl}/api/incidents`, {
       method: "POST",
     });
-    expect(blockedStart.status).toBe(409);
-    releaseDecision();
-    await waitForIncidentState(baseUrl, second.incidentId, "DENIED");
+    expect(blockedByBaseline.status).toBe(409);
+    releaseBaseline();
+    await waitForIncidentState(baseUrl, second.incidentId, "AWAITING_APPROVAL");
   });
 
   it("retains the restrictive policy and withholds VERIFIED after replay failure", async () => {
@@ -1107,6 +1147,10 @@ describe("Baseline Run product HTTP API", () => {
       },
       phase: "RESULT",
       status: "VALIDATION_FAILED",
+      verification: {
+        control: { result: "PASSED", state: "COMPLETED" },
+        replay: { result: "INCONCLUSIVE", state: "INCONCLUSIVE" },
+      },
     });
     expect(JSON.stringify(missionControl)).not.toContain(
       "browser-secret-must-not-leak",
@@ -1117,6 +1161,78 @@ describe("Baseline Run product HTTP API", () => {
     );
     expect(persistedPolicy.read()).toMatchObject({ version: 2 });
     persistedPolicy.close();
+  });
+
+  it("identifies a control-only verification failure from finalized evidence", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-control-failed-"));
+    cleanup.push(() => rm(runtimeDirectory, { force: true, recursive: true }));
+    const port = await findAvailablePort();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const trueForgeRuntime = createApplyingRemediationRuntime(baseUrl);
+    trueForgeRuntime.executeReplay = trueForgeRuntime.executeBaseline;
+    trueForgeRuntime.executeControl = async () => {
+      throw new Error("Control infrastructure failed");
+    };
+    const application = createBlackboxApplication({
+      incident: {
+        baseUrl,
+        modelAlias: "tool-model",
+        modelId: "vendor/tool-model",
+      },
+      runtimeDirectory,
+      trueForgeRuntime,
+    });
+    const server = serve({
+      fetch: application.app.fetch,
+      hostname: "127.0.0.1",
+      port,
+    });
+    cleanup.push(
+      () => application.shutdown(),
+      () => new Promise((resolve) => server.close(() => resolve())),
+    );
+
+    const baseline = await runIncident(baseUrl);
+    const awaiting = await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "AWAITING_APPROVAL",
+    );
+    if (awaiting.remediation.state !== "AWAITING_APPROVAL") {
+      throw new Error("Incident is not awaiting approval");
+    }
+    const response = await fetch(
+      `${baseUrl}/api/incidents/${baseline.manifest.incidentId}/remediation-decisions`,
+      {
+        body: JSON.stringify({
+          decision: "allow",
+          pendingDecision: awaiting.remediation.pendingDecision,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(response.status).toBe(202);
+    await waitForIncidentState(
+      baseUrl,
+      baseline.manifest.incidentId,
+      "VALIDATION_FAILED",
+    );
+
+    const missionControlResponse = await fetch(`${baseUrl}/api/mission-control`);
+    expect(missionControlResponse.status).toBe(200);
+    const missionControl = await missionControlResponse.json();
+    expect(missionControl).toMatchObject({
+      failure: {
+        detail: expect.stringContaining("legitimate Control Run"),
+        title: "Remediation validation failed",
+      },
+      verification: {
+        control: { result: "INCONCLUSIVE", state: "INCONCLUSIVE" },
+        replay: { result: "PROTECTED", state: "COMPLETED" },
+      },
+    });
+    expect(missionControl.failure.detail).not.toContain("Attack Replay");
   });
 });
 

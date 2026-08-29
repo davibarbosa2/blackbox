@@ -69,7 +69,7 @@ export function createMissionControlSnapshot(
         evidenceReference(control),
         "Control Run Evidence Bundle finalized",
       ),
-      ...remediationActivity(incident, reference),
+      ...remediationActivity(incident),
     ],
     approval:
       remediation?.state === "AWAITING_APPROVAL"
@@ -160,7 +160,7 @@ function timelineActivity(
   }
   if (evidence !== null) {
     activity.push({
-      detail: "The finalized bundle is the source of the Baseline Run verdict.",
+      detail: "This finalized bundle is the source of the displayed Run result.",
       evidence,
       id: `${evidence.bundleHash}:finalized`,
       kind: "evidence",
@@ -276,16 +276,20 @@ function activityFromRecord(
 
 function remediationActivity(
   incident: DurableIncidentRead | undefined,
-  evidence: EvidenceReference | null,
 ): MissionControlActivity[] {
-  if (incident?.remediation.state !== "AWAITING_APPROVAL") return [];
-  const remediation = incident.remediation;
+  const remediation = incident?.remediation;
+  if (
+    remediation === undefined ||
+    !("analysis" in remediation) ||
+    !("subagents" in remediation) ||
+    remediation.analysis === undefined ||
+    remediation.subagents === undefined
+  ) {
+    return [];
+  }
   const subagents = remediation.subagents.map((subagent) => ({
-    detail:
-      subagent.role === "PolicyPatchReviewer"
-        ? "Reviewed the restrictive Policy Patch and preserved document access."
-        : "Cross-checked the Baseline Run against its finalized bundle.",
-    evidence,
+    detail: "Focused review completion is retained in durable Incident state.",
+    evidence: null,
     id: subagent.doneEventId,
     kind: "subagent" as const,
     occurredAt: null,
@@ -299,8 +303,8 @@ function remediationActivity(
   return [
     ...subagents,
     {
-      detail: `Daytona executed ${remediation.analysis.artifact.path} with exit code ${remediation.analysis.execution.exitCode}.`,
-      evidence,
+      detail: `Durable Incident state records a Daytona exit code of ${remediation.analysis.execution.exitCode}.`,
+      evidence: null,
       id: remediation.analysis.execution.toolCallId,
       kind: "sandbox",
       occurredAt: null,
@@ -489,7 +493,9 @@ function createVerification(
       runId: control?.runId ?? null,
       state:
         control !== null
-          ? "COMPLETED"
+          ? control.result === "PASSED" && control.complete
+            ? "COMPLETED"
+            : "INCONCLUSIVE"
           : remediation.state === "VERIFYING" && replay !== null
             ? "ACTIVE"
             : "WAITING",
@@ -504,7 +510,9 @@ function createVerification(
       runId: replay?.runId ?? null,
       state:
         replay !== null
-          ? "COMPLETED"
+          ? replay.result === "PROTECTED" && replay.complete
+            ? "COMPLETED"
+            : "INCONCLUSIVE"
           : remediation.state === "VERIFYING"
             ? "ACTIVE"
             : "WAITING",
@@ -519,7 +527,7 @@ function readFailure(
 ): MissionControlSnapshot["failure"] {
   if (incident?.remediation.state === "VALIDATION_FAILED") {
     return {
-      detail: safeValidationFailure(incident.remediation.error),
+      detail: safeValidationFailure(incident.remediation.error, comparison),
       title: "Remediation validation failed",
     };
   }
@@ -555,7 +563,25 @@ function readFailure(
   return null;
 }
 
-function safeValidationFailure(error: string): string {
+function safeValidationFailure(
+  error: string,
+  comparison: MissionControlSnapshot["comparison"],
+): string {
+  const replayInconclusive =
+    comparison?.replay?.result === "INCONCLUSIVE" ||
+    comparison?.replay?.complete === false;
+  const controlInconclusive =
+    comparison?.control?.result === "INCONCLUSIVE" ||
+    comparison?.control?.complete === false;
+  if (replayInconclusive && controlInconclusive) {
+    return "The automatic Attack Replay and legitimate Control Run did not complete their evidence gates. Containment is withheld; inspect the server log for the private cause.";
+  }
+  if (replayInconclusive) {
+    return "The automatic Attack Replay did not complete its evidence gates. Containment is withheld; inspect the server log for the private cause.";
+  }
+  if (controlInconclusive) {
+    return "The legitimate Control Run did not complete its evidence gates. Containment is withheld; inspect the server log for the private cause.";
+  }
   const category = error.toLowerCase();
   if (category.includes("replay")) {
     return "The automatic Attack Replay did not complete its evidence gates. Containment is withheld; inspect the server log for the private cause.";

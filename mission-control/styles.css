@@ -1025,6 +1025,16 @@ pre,
   color: var(--white);
 }
 
+.verification-step[data-state="inconclusive"] .verification-marker {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.verification-step[data-state="inconclusive"] strong {
+  color: var(--warning);
+}
+
 .verification-step[data-state="active"] .verification-marker {
   border-color: var(--blue);
   color: var(--blue);
@@ -1582,6 +1592,42 @@ pre,
   text-transform: uppercase;
 }
 
+.approval-proof {
+  margin-top: 16px;
+}
+
+.approval-proof-list {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.approval-proof-list li {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 15px;
+  border-right: 1px solid var(--line);
+}
+
+.approval-proof-list li:last-child {
+  border-right: 0;
+}
+
+.approval-proof-list span {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+}
+
+.approval-proof-list strong {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
 .base-hash {
   display: grid;
   gap: 7px;
@@ -1728,6 +1774,19 @@ pre,
 
   .approval-columns {
     grid-template-columns: 1fr;
+  }
+
+  .approval-proof-list {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-proof-list li {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .approval-proof-list li:last-child {
+    border-bottom: 0;
   }
 
   .approval-actions {

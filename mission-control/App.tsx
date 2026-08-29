@@ -371,7 +371,8 @@ function IncidentView(props: IncidentViewProps): ReactNode {
           <BaselineProof snapshot={props.snapshot} />
         </section>
 
-        {props.command.error === null ? null : (
+        {props.command.error === null ||
+        props.snapshot.approval !== null ? null : (
           <div className="failure-card compact" role="alert">
             <span className="failure-icon" aria-hidden="true">!</span>
             <div>
@@ -541,14 +542,18 @@ interface VerificationStepProps {
   index: string;
   label: string;
   result: string | null;
-  state: "WAITING" | "ACTIVE" | "COMPLETED";
+  state: "WAITING" | "ACTIVE" | "COMPLETED" | "INCONCLUSIVE";
 }
 
 function VerificationStep(props: VerificationStepProps): ReactNode {
   return (
     <article className="verification-step" data-state={props.state.toLowerCase()}>
       <div className="verification-marker">
-        {props.state === "COMPLETED" ? "✓" : props.index}
+        {props.state === "COMPLETED"
+          ? "✓"
+          : props.state === "INCONCLUSIVE"
+            ? "!"
+            : props.index}
       </div>
       <div>
         <span className="step-state">{titleCase(props.state)}</span>
@@ -836,6 +841,31 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
               </ul>
             </section>
           </div>
+
+          <section
+            className="approval-section approval-proof"
+            aria-labelledby="investigation-proof-title"
+          >
+            <div className="approval-section-heading">
+              <div>
+                <span>04</span>
+                <h2 id="investigation-proof-title">Investigation activity</h2>
+              </div>
+            </div>
+            <ul className="approval-proof-list">
+              {props.snapshot.activity
+                .filter(
+                  (item) =>
+                    item.kind === "subagent" || item.kind === "sandbox",
+                )
+                .map((item) => (
+                  <li key={item.id}>
+                    <span>{sourceLabel(item.source)}</span>
+                    <strong>{item.title}</strong>
+                  </li>
+                ))}
+            </ul>
+          </section>
 
           <section className="base-hash" aria-label="Expected Capability Policy base">
             <span>Expected base</span>

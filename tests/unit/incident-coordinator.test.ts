@@ -13,6 +13,7 @@ import { IncidentCoordinator } from "../../src/incident/coordinator.js";
 import type { BaselineRunObservation } from "../../src/observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../../src/policy/capability-policy.js";
 import { SqliteRemediationStore } from "../../src/remediation/store.js";
+import { createBaselineRunManifest } from "../../src/scenario/definition.js";
 import { InvestigationExecutionError } from "../../src/trueforge/runtime.js";
 import type { TrueForgeRuntime } from "../../src/trueforge/runtime.js";
 import type {
@@ -92,9 +93,19 @@ describe("Incident coordinator observability", () => {
         throw new Error("Replay finalization is not used by this test");
       },
       readBundle: () => undefined,
+      readLatestRun(kind) {
+        return manifest?.kind === kind
+          ? { manifest, timeline: records }
+          : undefined;
+      },
       readManifest(): RunManifest {
         if (manifest === undefined) throw new Error("Run manifest unavailable");
         return manifest;
+      },
+      readRun(runId) {
+        return manifest?.runId === runId
+          ? { manifest, timeline: records }
+          : undefined;
       },
     };
     const runtime: TrueForgeRuntime = {
@@ -271,6 +282,59 @@ describe("Incident coordinator observability", () => {
     remediations.close();
   });
 
+  it("resumes an unmatched finalized Vulnerable Baseline without starting a duplicate", async () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const manifest = createBaselineRunManifest(
+      "incident-recovery",
+      "run-recovery",
+      "BLACKBOX-CANARY-recovery",
+      "2026-08-27T20:00:00.000Z",
+      "tool-model",
+      "vendor/tool-model",
+      policy,
+      "http://127.0.0.1:3000",
+    );
+    harness.ledger.createRun(manifest);
+    harness.ledger.finalizeBaseline(manifest.runId);
+    const executeInvestigation = vi.fn(async (request) =>
+      investigationEvidence(request, [trustedDestination]),
+    );
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime: {
+        executeBaseline: vi.fn(),
+        executeInvestigation,
+        executeSmoke: () => new Promise(() => undefined),
+      },
+      trustedDestination,
+    });
+
+    expect(executeInvestigation).not.toHaveBeenCalled();
+    expect(remediations.read(manifest.incidentId)).toBeUndefined();
+    coordinator.recover();
+    await vi.waitFor(() => {
+      expect(remediations.read(manifest.incidentId)).toMatchObject({
+        baseline: { runId: manifest.runId },
+        remediation: { state: "AWAITING_APPROVAL" },
+      });
+    });
+    expect(coordinator.start()).toEqual({
+      activeRunId: manifest.runId,
+      started: false,
+    });
+    expect(executeInvestigation).toHaveBeenCalledOnce();
+    await coordinator.shutdown();
+    remediations.close();
+  });
+
   it("denies the exact persisted action without applying policy or starting verification", async () => {
     const harness = createFinalizingHarness("VULNERABLE");
     const trustedDestination =
@@ -416,6 +480,7 @@ describe("Incident coordinator observability", () => {
 
 function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
   let manifest: BaselineRunManifest | undefined;
+  let bundle: BaselineEvidenceBundle | undefined;
   const finalized = vi.fn();
   const records: EvidenceRecord[] = [];
   const ledger: EvidenceLedger = {
@@ -431,7 +496,7 @@ function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
     finalizeBaseline(): BaselineEvidenceBundle {
       finalized();
       if (manifest === undefined) throw new Error("Run manifest unavailable");
-      return {
+      bundle = {
         bundleHash: "a".repeat(64),
         completeness: {
           complete: verdict === "VULNERABLE",
@@ -443,6 +508,7 @@ function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
         timeline: [],
         verdict,
       };
+      return bundle;
     },
     finalizeControl(): never {
       throw new Error("Control finalization is not used by this test");
@@ -450,10 +516,25 @@ function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
     finalizeReplay(): never {
       throw new Error("Replay finalization is not used by this test");
     },
-    readBundle: () => undefined,
+    readBundle: (runId) =>
+      bundle?.manifest.runId === runId ? bundle : undefined,
+    readLatestRun(kind) {
+      return manifest?.kind === kind
+        ? bundle === undefined
+          ? { manifest, timeline: records }
+          : { bundle, manifest, timeline: records }
+        : undefined;
+    },
     readManifest(): RunManifest {
       if (manifest === undefined) throw new Error("Run manifest unavailable");
       return manifest;
+    },
+    readRun(runId) {
+      return manifest?.runId === runId
+        ? bundle === undefined
+          ? { manifest, timeline: records }
+          : { bundle, manifest, timeline: records }
+        : undefined;
     },
   };
   return { finalized, ledger, records };

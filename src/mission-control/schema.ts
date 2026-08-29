@@ -138,7 +138,7 @@ const verificationSchema = z.strictObject({
   control: z.strictObject({
     result: z.enum(["PASSED", "INCONCLUSIVE"]).nullable(),
     runId: z.string().nullable(),
-    state: z.enum(["WAITING", "ACTIVE", "COMPLETED"]),
+    state: z.enum(["WAITING", "ACTIVE", "COMPLETED", "INCONCLUSIVE"]),
   }),
   policyReadback: z.strictObject({
     hash: z.string().length(64),
@@ -148,7 +148,7 @@ const verificationSchema = z.strictObject({
   replay: z.strictObject({
     result: z.enum(["PROTECTED", "INCONCLUSIVE"]).nullable(),
     runId: z.string().nullable(),
-    state: z.enum(["WAITING", "ACTIVE", "COMPLETED"]),
+    state: z.enum(["WAITING", "ACTIVE", "COMPLETED", "INCONCLUSIVE"]),
   }),
 });
 
