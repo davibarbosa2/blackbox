@@ -152,6 +152,11 @@ const verificationSchema = z.strictObject({
   }),
 });
 
+const integrationsSchema = z.strictObject({
+  trueForgeSessionId: z.string().nullable(),
+  trueForgeUrl: z.url(),
+});
+
 export const missionControlSnapshotSchema = z.strictObject({
   activity: z.array(activitySchema),
   approval: approvalSchema.nullable(),
@@ -164,6 +169,7 @@ export const missionControlSnapshotSchema = z.strictObject({
       title: z.string(),
     })
     .nullable(),
+  integrations: integrationsSchema.optional(),
   incident: z
     .strictObject({
       id: z.string(),

@@ -251,6 +251,89 @@ describe("Incident coordinator observability", () => {
     remediations.close();
   });
 
+  it("projects sanitized durable TrueForge milestones while investigation is active", async () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    let finishInvestigation: (() => void) | undefined;
+    const investigationGate = new Promise<void>((resolve) => {
+      finishInvestigation = resolve;
+    });
+    const runtime: TrueForgeRuntime = {
+      executeBaseline: async ({ runId }) => baselineEvidence(runId),
+      async executeInvestigation(request) {
+        request.onMilestone?.({
+          kind: "TURN_STARTED",
+          occurredAt: "2026-08-28T12:00:00.000Z",
+          sessionId: "session-investigation",
+          sourceEventId: "event-turn-live",
+        });
+        request.onMilestone?.({
+          kind: "EVIDENCE_REVIEW_STARTED",
+          occurredAt: "2026-08-28T12:00:01.000Z",
+          sessionId: "session-investigation",
+          sourceEventId: "event-evidence-live",
+        });
+        await investigationGate;
+        return investigationEvidence(request, [trustedDestination]);
+      },
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy([trustedDestination]),
+      remediations,
+      runtime,
+      trustedDestination,
+      trueForgeUrl: "http://127.0.0.1:8790",
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    await vi.waitFor(() => {
+      expect(coordinator.readMissionControl()).toMatchObject({
+        activity: expect.arrayContaining([
+          expect.objectContaining({
+            id: "event-turn-live",
+            status: "ACTIVE",
+            title: "TrueForge investigation started",
+          }),
+          expect.objectContaining({
+            id: "event-evidence-live",
+            status: "ACTIVE",
+            title: "Evidence provenance review started",
+          }),
+        ]),
+        integrations: {
+          trueForgeSessionId: "session-investigation",
+          trueForgeUrl: "http://127.0.0.1:8790",
+        },
+        status: "INVESTIGATING",
+      });
+    });
+    expect(
+      JSON.stringify(
+        remediations.read(started.incidentId)?.remediation
+          .investigationProgress,
+      ),
+    ).not.toContain("BLACKBOX-CANARY");
+
+    finishInvestigation?.();
+    await vi.waitFor(() => {
+      expect(remediations.read(started.incidentId)).toMatchObject({
+        remediation: {
+          investigationProgress: { sessionId: "session-investigation" },
+          state: "AWAITING_APPROVAL",
+        },
+      });
+    });
+    await coordinator.shutdown();
+    remediations.close();
+  });
+
   it("does not investigate an inconclusive finalized Baseline Run", async () => {
     const harness = createFinalizingHarness("INCONCLUSIVE");
     const executeInvestigation = vi.fn();

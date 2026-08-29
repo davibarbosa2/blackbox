@@ -44,6 +44,7 @@ interface BlackboxAppOptions {
     baseUrl: string;
     modelAlias: string;
     modelId: string;
+    trueForgeUrl?: string;
   };
   observability?: BlackboxObservability;
   runtimeDirectory: string;
@@ -130,6 +131,9 @@ function createIncidentApplication(
     runtime: options.trueForgeRuntime,
     trustedDestination,
   };
+  if (incidentOptions.trueForgeUrl !== undefined) {
+    coordinatorOptions.trueForgeUrl = incidentOptions.trueForgeUrl;
+  }
   if (options.observability !== undefined) {
     coordinatorOptions.observeBaselineRun =
       options.observability.observeBaselineRun;

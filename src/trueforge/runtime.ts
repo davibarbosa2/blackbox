@@ -234,6 +234,26 @@ export type InvestigationExecutionEvidence = z.infer<
   typeof investigationExecutionEvidenceSchema
 >;
 
+export const investigationMilestoneSchema = z.strictObject({
+  kind: z.enum([
+    "TURN_STARTED",
+    "INVESTIGATOR_MCP_INITIALIZED",
+    "POLICY_REVIEW_STARTED",
+    "POLICY_REVIEW_COMPLETED",
+    "EVIDENCE_REVIEW_STARTED",
+    "EVIDENCE_REVIEW_COMPLETED",
+    "ANALYSIS_SANDBOX_CREATED",
+    "POLICY_ACTION_OBSERVED",
+  ]),
+  occurredAt: z.string(),
+  sessionId: z.string(),
+  sourceEventId: z.string(),
+});
+
+export type InvestigationMilestone = z.infer<
+  typeof investigationMilestoneSchema
+>;
+
 export const policyActionResolutionSchema = z.strictObject({
   decision: z.enum(["allow", "deny"]),
   pendingDecision: pendingPolicyDecisionSchema,
@@ -254,6 +274,7 @@ export interface BaselineExecutionRequest {
 export interface InvestigationExecutionRequest {
   bundle: BaselineEvidenceBundle;
   mcpAuthorization: string;
+  onMilestone?: (milestone: InvestigationMilestone) => void;
   policy: PolicyRead;
   signal?: AbortSignal;
   trustedDestination: string;

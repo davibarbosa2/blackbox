@@ -13,8 +13,10 @@ import {
   investigationAnalysisResultSchema,
   InvestigationExecutionError,
   investigationExecutionEvidenceSchema,
+  investigationMilestoneSchema,
   investigationProposalSchema,
   type InvestigationExecutionEvidence,
+  type InvestigationMilestone,
   policyPatchSubagentSchema,
   policyPatchSubagentOutputSchema,
 } from "./runtime.js";
@@ -38,10 +40,18 @@ export async function executeTrueForgeInvestigation(
   agentName: string,
   prompt: string,
   signal?: AbortSignal,
+  onMilestone?: (milestone: InvestigationMilestone) => void,
 ): Promise<InvestigationExecutionEvidence> {
   const state = { pendingActionObserved: false };
   try {
-    return await executeInvestigation(client, agentName, prompt, state, signal);
+    return await executeInvestigation(
+      client,
+      agentName,
+      prompt,
+      state,
+      signal,
+      onMilestone,
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "TrueForge investigation failed";
@@ -55,6 +65,7 @@ async function executeInvestigation(
   prompt: string,
   state: { pendingActionObserved: boolean },
   signal?: AbortSignal,
+  onMilestone?: (milestone: InvestigationMilestone) => void,
 ): Promise<InvestigationExecutionEvidence> {
   const session = await client.sessions.create(
     { agent: { name: agentName } },
@@ -74,7 +85,27 @@ async function executeInvestigation(
     requestOptions(turnSignal, 5 * 60),
   );
   const liveEvents: TrueForgeApi.TurnStreamingEvent[] = [];
-  for await (const event of stream) liveEvents.push(event);
+  const threadRoles = new Map<
+    string,
+    "EvidenceProvenanceVerifier" | "PolicyPatchReviewer"
+  >();
+  const policyCallEvents = new Set<string>();
+  for await (const event of stream) {
+    liveEvents.push(event);
+    const milestone = milestoneFromEvent(
+      event,
+      session.data.id,
+      threadRoles,
+      policyCallEvents,
+    );
+    if (milestone !== undefined && onMilestone !== undefined) {
+      try {
+        onMilestone(milestone);
+      } catch {
+        // Mission Control progress is diagnostic and must not affect evidence.
+      }
+    }
+  }
 
   const turnCreated = liveEvents.find(
     (event): event is TrueForgeApi.TurnCreatedEvent =>
@@ -180,6 +211,77 @@ async function executeInvestigation(
       turnId: turnCreated.turnId,
     },
     subagents,
+  });
+}
+
+function milestoneFromEvent(
+  event: TrueForgeApi.TurnStreamingEvent,
+  sessionId: string,
+  threadRoles: Map<
+    string,
+    "EvidenceProvenanceVerifier" | "PolicyPatchReviewer"
+  >,
+  policyCallEvents: Set<string>,
+): InvestigationMilestone | undefined {
+  if (event.type === "model.message") {
+    if (
+      event.toolCalls?.some(
+        (call) =>
+          call.function.name === "apply_policy_patch" &&
+          call.toolInfo.type === "mcp" &&
+          call.toolInfo.serverName === INVESTIGATOR_MCP_NAME,
+      ) === true
+    ) {
+      policyCallEvents.add(event.id);
+    }
+    return undefined;
+  }
+
+  let kind: InvestigationMilestone["kind"] | undefined;
+  if (event.type === "turn.created") {
+    kind = "TURN_STARTED";
+  } else if (
+    event.type === "mcp.initialize" &&
+    event.mcpServers.some((server) => server.name === INVESTIGATOR_MCP_NAME)
+  ) {
+    kind = "INVESTIGATOR_MCP_INITIALIZED";
+  } else if (event.type === "thread.created") {
+    if (
+      event.agentInfo.name === "EvidenceProvenanceVerifier" ||
+      event.agentInfo.name === "PolicyPatchReviewer"
+    ) {
+      threadRoles.set(event.threadId, event.agentInfo.name);
+      kind =
+        event.agentInfo.name === "PolicyPatchReviewer"
+          ? "POLICY_REVIEW_STARTED"
+          : "EVIDENCE_REVIEW_STARTED";
+    }
+  } else if (event.type === "thread.done" && event.state.status === "done") {
+    const role = threadRoles.get(event.threadId);
+    kind =
+      role === "PolicyPatchReviewer"
+        ? "POLICY_REVIEW_COMPLETED"
+        : role === "EvidenceProvenanceVerifier"
+          ? "EVIDENCE_REVIEW_COMPLETED"
+          : undefined;
+  } else if (
+    event.type === "sandbox.created" &&
+    (event.threadId === null || event.threadId === "main")
+  ) {
+    kind = "ANALYSIS_SANDBOX_CREATED";
+  } else if (
+    event.type === "tool.approval_required" &&
+    event.toolCalls.length === 1 &&
+    policyCallEvents.has(event.toolCalls[0]?.sourceEventId ?? "")
+  ) {
+    kind = "POLICY_ACTION_OBSERVED";
+  }
+  if (kind === undefined) return undefined;
+  return investigationMilestoneSchema.parse({
+    kind,
+    occurredAt: event.createdAt,
+    sessionId,
+    sourceEventId: event.id,
   });
 }
 

@@ -10,6 +10,7 @@ import {
   type ReplayEvidenceBundle,
 } from "../evidence/ledger.js";
 import type { DurableIncidentRead } from "../remediation/store.js";
+import type { InvestigationMilestone } from "../trueforge/runtime.js";
 import {
   type EvidenceReference,
   type MissionControlActivity,
@@ -33,6 +34,7 @@ export function createMissionControlSnapshot(
   incident: DurableIncidentRead | undefined,
   baselineRunning: boolean,
   decisionPending: boolean,
+  trueForgeUrl?: string,
 ): MissionControlSnapshot {
   const baseline = readBaselineBundle(baselineRun);
   const replay = readReplayBundle(replayRun);
@@ -51,6 +53,7 @@ export function createMissionControlSnapshot(
   const comparison = createComparison(baseline, replay, control, incident);
   const failure = readFailure(baselineRun, incident, comparison);
   const verification = createVerification(incident, comparison);
+  const trueForgeSessionId = readTrueForgeSessionId(incident);
 
   return missionControlSnapshotSchema.parse({
     activity: [
@@ -97,6 +100,10 @@ export function createMissionControlSnapshot(
     comparison,
     decisionPending,
     failure,
+    integrations:
+      trueForgeUrl === undefined
+        ? undefined
+        : { trueForgeSessionId, trueForgeUrl },
     incident:
       incident === undefined
         ? baselineRun === undefined
@@ -107,6 +114,26 @@ export function createMissionControlSnapshot(
     status,
     verification,
   });
+}
+
+function readTrueForgeSessionId(
+  incident: DurableIncidentRead | undefined,
+): string | null {
+  const remediation = incident?.remediation;
+  if (remediation === undefined) return null;
+  if (remediation.investigationProgress !== undefined) {
+    return remediation.investigationProgress.sessionId;
+  }
+  if (
+    "pendingDecision" in remediation &&
+    remediation.pendingDecision !== undefined
+  ) {
+    return remediation.pendingDecision.sessionId;
+  }
+  if ("decision" in remediation && remediation.decision !== undefined) {
+    return remediation.decision.sessionId;
+  }
+  return null;
 }
 
 function readBaselineBundle(
@@ -278,14 +305,24 @@ function remediationActivity(
   incident: DurableIncidentRead | undefined,
 ): MissionControlActivity[] {
   const remediation = incident?.remediation;
+  if (remediation === undefined) return [];
+  const progress = remediation.investigationProgress?.milestones ?? [];
+  const progressKinds = new Set(progress.map((milestone) => milestone.kind));
+  const streamed = progress.map((milestone) =>
+    activityFromInvestigationMilestone(
+      milestone,
+      remediation.state,
+      progressKinds,
+      "analysis" in remediation && remediation.analysis !== undefined,
+    ),
+  );
   if (
-    remediation === undefined ||
     !("analysis" in remediation) ||
     !("subagents" in remediation) ||
     remediation.analysis === undefined ||
     remediation.subagents === undefined
   ) {
-    return [];
+    return streamed;
   }
   const subagents = remediation.subagents.map((subagent) => ({
     detail: "Focused review completion is retained in durable Incident state.",
@@ -300,7 +337,7 @@ function remediationActivity(
         ? "Policy Patch Reviewer"
         : "Evidence Provenance Verifier",
   }));
-  return [
+  const finalized: MissionControlActivity[] = [
     ...subagents,
     {
       detail: `Durable Incident state records a Daytona exit code of ${remediation.analysis.execution.exitCode}.`,
@@ -313,6 +350,83 @@ function remediationActivity(
       title: "Sandbox analysis completed",
     },
   ];
+  return [
+    ...new Map(
+      [...streamed, ...finalized].map((activity) => [activity.id, activity]),
+    ).values(),
+  ];
+}
+
+function activityFromInvestigationMilestone(
+  milestone: InvestigationMilestone,
+  remediationState: DurableIncidentRead["remediation"]["state"],
+  progressKinds: ReadonlySet<InvestigationMilestone["kind"]>,
+  analysisComplete: boolean,
+): MissionControlActivity {
+  const completed =
+    remediationState !== "INVESTIGATING" ||
+    milestone.kind === "INVESTIGATOR_MCP_INITIALIZED" ||
+    milestone.kind === "POLICY_REVIEW_COMPLETED" ||
+    milestone.kind === "EVIDENCE_REVIEW_COMPLETED" ||
+    milestone.kind === "POLICY_ACTION_OBSERVED" ||
+    (milestone.kind === "POLICY_REVIEW_STARTED" &&
+      progressKinds.has("POLICY_REVIEW_COMPLETED")) ||
+    (milestone.kind === "EVIDENCE_REVIEW_STARTED" &&
+      progressKinds.has("EVIDENCE_REVIEW_COMPLETED")) ||
+    (milestone.kind === "ANALYSIS_SANDBOX_CREATED" && analysisComplete);
+  const display = {
+    ANALYSIS_SANDBOX_CREATED: {
+      kind: "sandbox" as const,
+      source: "DAYTONA" as const,
+      title: "Daytona sandbox analysis running",
+    },
+    EVIDENCE_REVIEW_COMPLETED: {
+      kind: "subagent" as const,
+      source: "TRUEFORGE" as const,
+      title: "Evidence Provenance Verifier",
+    },
+    EVIDENCE_REVIEW_STARTED: {
+      kind: "subagent" as const,
+      source: "TRUEFORGE" as const,
+      title: "Evidence provenance review started",
+    },
+    INVESTIGATOR_MCP_INITIALIZED: {
+      kind: "phase" as const,
+      source: "TRUEFORGE" as const,
+      title: "Incident evidence connected",
+    },
+    POLICY_ACTION_OBSERVED: {
+      kind: "phase" as const,
+      source: "TRUEFORGE" as const,
+      title: "Policy Patch proposal observed",
+    },
+    POLICY_REVIEW_COMPLETED: {
+      kind: "subagent" as const,
+      source: "TRUEFORGE" as const,
+      title: "Policy Patch Reviewer",
+    },
+    POLICY_REVIEW_STARTED: {
+      kind: "subagent" as const,
+      source: "TRUEFORGE" as const,
+      title: "Policy Patch review started",
+    },
+    TURN_STARTED: {
+      kind: "phase" as const,
+      source: "TRUEFORGE" as const,
+      title: "TrueForge investigation started",
+    },
+  }[milestone.kind];
+  return {
+    detail:
+      "Sanitized progress derived from durable TrueForge stream metadata; no prompt, secret, or reasoning content is retained.",
+    evidence: null,
+    id: milestone.sourceEventId,
+    kind: display.kind,
+    occurredAt: milestone.occurredAt,
+    source: display.source,
+    status: completed ? "COMPLETED" : "ACTIVE",
+    title: display.title,
+  };
 }
 
 function createComparison(

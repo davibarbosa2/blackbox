@@ -10,8 +10,10 @@ import {
   evidenceJustificationSchema,
   investigationAnalysisSchema,
   investigationDiagnosisSchema,
+  investigationMilestoneSchema,
   pendingPolicyDecisionSchema,
   subagentEvidenceSchema,
+  type InvestigationMilestone,
 } from "../trueforge/runtime.js";
 
 const baselineSchema = z.object({
@@ -35,18 +37,25 @@ const lifecycleEventSchema = z.object({
   ]),
 });
 const lifecycleSchema = z.array(lifecycleEventSchema);
+const investigationProgressSchema = z.strictObject({
+  milestones: z.array(investigationMilestoneSchema),
+  sessionId: z.string(),
+});
 const investigatingSchema = z.object({
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   state: z.literal("INVESTIGATING"),
 });
 
 const draftedSchema = z.object({
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   state: z.literal("DRAFTED"),
 });
 
 const dryRunPassedSchema = z.object({
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   state: z.literal("DRY_RUN_PASSED"),
 });
@@ -69,6 +78,7 @@ const validationFailedSchema = z.object({
   decision: z.lazy(() => remediationDecisionEvidenceSchema).optional(),
   dryRun: policyPatchDryRunSchema.optional(),
   error: z.string(),
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   pendingDecision: pendingPolicyDecisionSchema.optional(),
   policyReadback: policyReadSchema.optional(),
@@ -89,6 +99,7 @@ const awaitingApprovalSchema = z.object({
   diagnosis: investigationDiagnosisSchema,
   dryRun: policyPatchDryRunSchema,
   evidenceJustification: evidenceJustificationSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   pendingDecision: pendingPolicyDecisionSchema,
   state: z.literal("AWAITING_APPROVAL"),
@@ -116,6 +127,7 @@ const deniedSchema = z.object({
     decision: z.literal("deny"),
   }),
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("DENIED"),
@@ -130,6 +142,7 @@ const staleSchema = z.object({
     decision: z.literal("allow"),
   }),
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("STALE"),
@@ -144,6 +157,7 @@ const appliedSchema = z.object({
     decision: z.literal("allow"),
   }),
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("APPLIED"),
@@ -280,6 +294,37 @@ export class SqliteRemediationStore {
     return this.read(incidentId) ?? incident;
   }
 
+  recordInvestigationMilestone(
+    incidentId: string,
+    sourceMilestone: InvestigationMilestone,
+  ): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state !== "INVESTIGATING") {
+      return current;
+    }
+    const milestone = investigationMilestoneSchema.parse(sourceMilestone);
+    const progress = current.remediation.investigationProgress;
+    if (
+      progress?.sessionId === milestone.sessionId &&
+      progress.milestones.some(
+        (candidate) => candidate.sourceEventId === milestone.sourceEventId,
+      )
+    ) {
+      return current;
+    }
+    const milestones =
+      progress?.sessionId === milestone.sessionId
+        ? [...progress.milestones, milestone]
+        : [milestone];
+    return this.#update(current, {
+      ...current.remediation,
+      investigationProgress: {
+        milestones,
+        sessionId: milestone.sessionId,
+      },
+    });
+  }
+
   readMcpAuthorization(incidentId: string): string {
     const row = this.#database
       .prepare(
@@ -309,6 +354,7 @@ export class SqliteRemediationStore {
       analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "DENIED"),
       policyReadback,
       state: "DENIED",
@@ -330,6 +376,7 @@ export class SqliteRemediationStore {
       analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "STALE"),
       policyReadback,
       state: "STALE",
@@ -357,6 +404,7 @@ export class SqliteRemediationStore {
       analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "APPLIED"),
       policyReadback,
       state: "APPLIED",
@@ -437,6 +485,7 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not being investigated`);
     }
     return this.#update(current, {
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "DRAFTED"),
       state: "DRAFTED",
     });
@@ -452,6 +501,7 @@ export class SqliteRemediationStore {
     }
     return this.#update(current, {
       dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "DRY_RUN_PASSED"),
       state: "DRY_RUN_PASSED",
     });
@@ -467,6 +517,7 @@ export class SqliteRemediationStore {
     }
     return this.#update(current, {
       ...remediation,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "AWAITING_APPROVAL"),
       state: "AWAITING_APPROVAL",
     });
@@ -490,6 +541,10 @@ export class SqliteRemediationStore {
       lifecycle: appendLifecycle(current, "VALIDATION_FAILED"),
       state: "VALIDATION_FAILED",
     };
+    if (current.remediation.investigationProgress !== undefined) {
+      failure.investigationProgress =
+        current.remediation.investigationProgress;
+    }
     if (dryRun !== undefined) failure.dryRun = dryRun;
     if (pendingDecision !== undefined) {
       failure.pendingDecision = pendingDecision;

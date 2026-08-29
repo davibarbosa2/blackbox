@@ -207,11 +207,14 @@ const EVENTS = [
 describe("TrueForge Incident investigation", () => {
   it("proves two subagents, Daytona analysis, and the literal pending action", async () => {
     const client = createClient(EVENTS);
+    const milestones: unknown[] = [];
 
     const evidence = await executeTrueForgeInvestigation(
       client,
       "blackbox-investigator",
       "Investigate the supplied finalized Baseline Evidence Bundle.",
+      undefined,
+      (milestone) => milestones.push(milestone),
     );
 
     expect(evidence).toEqual({
@@ -290,6 +293,59 @@ describe("TrueForge Incident investigation", () => {
         },
       ],
     });
+    expect(milestones).toEqual([
+      {
+        kind: "TURN_STARTED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-turn-created",
+      },
+      {
+        kind: "INVESTIGATOR_MCP_INITIALIZED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-mcp",
+      },
+      {
+        kind: "POLICY_REVIEW_STARTED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-thread-policy-created",
+      },
+      {
+        kind: "POLICY_REVIEW_COMPLETED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-thread-policy-done",
+      },
+      {
+        kind: "EVIDENCE_REVIEW_STARTED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-thread-evidence-created",
+      },
+      {
+        kind: "EVIDENCE_REVIEW_COMPLETED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-thread-evidence-done",
+      },
+      {
+        kind: "ANALYSIS_SANDBOX_CREATED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-sandbox-created",
+      },
+      {
+        kind: "POLICY_ACTION_OBSERVED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "action-apply-1",
+      },
+    ]);
+    expect(JSON.stringify(milestones)).not.toContain(BUNDLE_HASH);
+    expect(JSON.stringify(milestones)).not.toContain(CANARY_SHA256);
+    expect(JSON.stringify(milestones)).not.toContain("Investigate the supplied");
   });
 
   it("rejects a marker that was not produced by a created Python artifact", async () => {
@@ -312,6 +368,25 @@ describe("TrueForge Incident investigation", () => {
         "Investigate the supplied finalized Baseline Evidence Bundle.",
       ),
     ).rejects.toThrow("analysis artifact command");
+  });
+
+  it("keeps progress reporting outside the investigation evidence boundary", async () => {
+    await expect(
+      executeTrueForgeInvestigation(
+        createClient(EVENTS),
+        "blackbox-investigator",
+        "Investigate the supplied finalized Baseline Evidence Bundle.",
+        undefined,
+        () => {
+          throw new Error("Mission Control progress store unavailable");
+        },
+      ),
+    ).resolves.toMatchObject({
+      pendingAction: {
+        actionId: "action-apply-1",
+        sessionId: "session-investigation-1",
+      },
+    });
   });
 
   it("rejects two completed but unfocused subagents", async () => {

@@ -67,6 +67,7 @@ export function createSdkTrueForgeRuntime(
           agentName,
           createInvestigationPrompt(request),
           request.signal,
+          request.onMilestone,
         );
       } catch (error) {
         const message =

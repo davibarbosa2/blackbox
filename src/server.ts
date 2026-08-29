@@ -61,6 +61,7 @@ export async function startBlackboxServer(
         baseUrl: `http://${config.blackbox.host}:${config.blackbox.port}`,
         modelAlias: config.openRouter.modelAlias,
         modelId: config.openRouter.modelId,
+        trueForgeUrl: config.trueForge.baseUrl,
       },
       runtimeDirectory: config.runtimeDirectory,
       trueForgeRuntime,

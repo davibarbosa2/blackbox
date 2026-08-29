@@ -70,6 +70,7 @@ export interface IncidentCoordinatorOptions {
   remediations: SqliteRemediationStore;
   runtime: TrueForgeRuntime;
   trustedDestination: string;
+  trueForgeUrl?: string;
 }
 
 export class IncidentCoordinator {
@@ -81,6 +82,7 @@ export class IncidentCoordinator {
   readonly #runtime: TrueForgeRuntime;
   readonly #remediations: SqliteRemediationStore;
   readonly #trustedDestination: string;
+  readonly #trueForgeUrl: string | undefined;
   readonly #observeBaselineRun:
     | ((context: BaselineRunObservationContext) => BaselineRunObservation)
     | undefined;
@@ -123,6 +125,7 @@ export class IncidentCoordinator {
     this.#baseUrl = options.baseUrl;
     this.#remediations = options.remediations;
     this.#trustedDestination = options.trustedDestination;
+    this.#trueForgeUrl = options.trueForgeUrl;
     this.#observeBaselineRun = options.observeBaselineRun;
   }
 
@@ -239,6 +242,7 @@ export class IncidentCoordinator {
       baselineRun !== undefined && baselineRun.bundle === undefined,
       incident !== undefined &&
         this.#activeDecision?.incidentId === incident.incidentId,
+      this.#trueForgeUrl,
     );
   }
 
@@ -817,6 +821,12 @@ export class IncidentCoordinator {
           await executeInvestigation({
             bundle,
             mcpAuthorization,
+            onMilestone: (milestone) => {
+              this.#remediations.recordInvestigationMilestone(
+                incidentId,
+                milestone,
+              );
+            },
             policy,
             signal,
             trustedDestination: this.#trustedDestination,
