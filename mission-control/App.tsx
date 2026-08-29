@@ -38,7 +38,7 @@ import trueForgeMarkLight from "./assets/trueforge-logomark-light.svg";
 
 type Command = "START" | "ALLOW" | "DENY";
 type Tone = "neutral" | "live" | "danger" | "warning" | "success";
-type StepState = "active" | "complete" | "skipped" | "upcoming";
+type StepState = "active" | "complete" | "incomplete" | "skipped" | "upcoming";
 
 interface CommandState {
   active: Command | null;
@@ -376,6 +376,8 @@ function JourneyRail(props: JourneyRailProps): ReactNode {
               <span className="journey-number">
                 {state === "complete"
                   ? <Check aria-hidden="true" size={13} />
+                  : state === "incomplete"
+                    ? <AlertTriangle aria-hidden="true" size={13} />
                   : state === "skipped"
                     ? <Minus aria-hidden="true" size={13} />
                     : stage[0]}
@@ -1259,6 +1261,7 @@ function journeyStepState(
           ? "complete"
           : "skipped";
       }
+      if (index === 3 && snapshot.verification !== null) return "incomplete";
       return "skipped";
     }
     return "complete";

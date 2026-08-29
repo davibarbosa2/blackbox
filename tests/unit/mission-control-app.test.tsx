@@ -205,7 +205,7 @@ describe("Mission Control browser workflow", () => {
       "complete",
     );
     expect(within(journey).getByText("Verify").closest("li")?.dataset.state).toBe(
-      "skipped",
+      "incomplete",
     );
   });
 

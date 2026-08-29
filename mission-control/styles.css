@@ -740,6 +740,10 @@ pre,
   color: var(--muted-strong);
 }
 
+.journey-rail li[data-state="incomplete"] {
+  color: var(--warning);
+}
+
 .journey-number {
   display: grid;
   place-items: center;
@@ -758,6 +762,12 @@ pre,
   border-color: rgb(96 221 160 / 24%);
   color: var(--success);
   background: rgb(96 221 160 / 7%);
+}
+
+.journey-rail li[data-state="incomplete"] .journey-number {
+  border-color: rgb(243 185 79 / 30%);
+  color: var(--warning);
+  background: rgb(243 185 79 / 8%);
 }
 
 .journey-rail li[data-state="active"] .journey-number {
