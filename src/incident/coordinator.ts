@@ -12,6 +12,10 @@ import type {
 } from "../evidence/ledger.js";
 import { baselineEvidenceBundleSchema } from "../evidence/ledger.js";
 import { classifyTrueForgeFailure } from "../failure.js";
+import {
+  createMissionControlSnapshot,
+  type MissionControlSnapshot,
+} from "../mission-control/snapshot.js";
 import type {
   CapabilityPolicy,
   PolicyApplicationResult,
@@ -105,6 +109,12 @@ export class IncidentCoordinator {
         proposal: InvestigationProposal;
       }
     | undefined;
+  #current:
+    | {
+        incidentId: string;
+        runId: string;
+      }
+    | undefined;
 
   constructor(options: IncidentCoordinatorOptions) {
     this.#runtime = options.runtime;
@@ -145,6 +155,7 @@ export class IncidentCoordinator {
       this.#policy,
       this.#baseUrl,
     );
+    this.#current = { incidentId, runId };
     this.#ledger.createRun(manifest);
     this.#ledger.append([
       stateRecord(runId, "PREPARING", createdAt),
@@ -180,6 +191,23 @@ export class IncidentCoordinator {
 
   readIncident(incidentId: string): DurableIncidentRead | undefined {
     return this.#remediations.read(incidentId);
+  }
+
+  readMissionControl(): MissionControlSnapshot {
+    const current = this.#current;
+    const incident =
+      current === undefined
+        ? this.#remediations.readLatest()
+        : this.#remediations.read(current.incidentId);
+    const runId = current?.runId ?? incident?.baseline.runId;
+    const run =
+      runId === undefined ? undefined : this.#ledger.readRun?.(runId);
+    return createMissionControlSnapshot(
+      run,
+      incident,
+      this.#active?.runId === runId,
+      this.#activeDecision?.incidentId === incident?.incidentId,
+    );
   }
 
   decide(

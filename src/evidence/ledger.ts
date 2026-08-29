@@ -208,6 +208,12 @@ export type ControlEvidenceBundle = z.infer<
   typeof controlEvidenceBundleSchema
 >;
 
+export interface EvidenceRunRead {
+  bundle?: EvidenceBundle;
+  manifest: RunManifest;
+  timeline: EvidenceRecord[];
+}
+
 export interface EvidenceLedger {
   append(records: readonly EvidenceRecord[]): void;
   createRun(manifest: RunManifest): void;
@@ -216,6 +222,7 @@ export interface EvidenceLedger {
   finalizeReplay(runId: string): ReplayEvidenceBundle;
   readBundle(runId: string): EvidenceBundle | undefined;
   readManifest(runId: string): RunManifest;
+  readRun?(runId: string): EvidenceRunRead | undefined;
 }
 
 interface PreparedFinalization {
@@ -431,6 +438,16 @@ export class SqliteEvidenceLedger implements EvidenceLedger {
     return this.#readManifest(runId);
   }
 
+  readRun(runId: string): EvidenceRunRead | undefined {
+    const manifest = this.#findManifest(runId);
+    if (manifest === undefined) return undefined;
+    const timeline = this.#readTimeline(runId);
+    const bundle = this.readBundle(runId);
+    return bundle === undefined
+      ? { manifest, timeline }
+      : { bundle, manifest, timeline };
+  }
+
   #prepareFinalization(runId: string): PreparedFinalization {
     const manifest = this.#readManifest(runId);
     const beforeCompletion = this.#readTimeline(runId);
@@ -471,10 +488,16 @@ export class SqliteEvidenceLedger implements EvidenceLedger {
   }
 
   #readManifest(runId: string): RunManifest {
+    const manifest = this.#findManifest(runId);
+    if (manifest === undefined) throw new Error(`Run ${runId} was not found`);
+    return manifest;
+  }
+
+  #findManifest(runId: string): RunManifest | undefined {
     const row = this.#database
       .prepare("SELECT manifest_json FROM evidence_runs WHERE run_id = ?")
       .get(runId);
-    if (row === undefined) throw new Error(`Run ${runId} was not found`);
+    if (row === undefined) return undefined;
     const parsed = manifestRowSchema.parse(row);
     return runManifestSchema.parse(JSON.parse(parsed.manifest_json));
   }

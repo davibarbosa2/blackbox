@@ -225,6 +225,95 @@ describe("Baseline Run product HTTP API", () => {
       },
     });
 
+    const missionControlResponse = await fetch(`${baseUrl}/api/mission-control`);
+    expect(missionControlResponse.status).toBe(200);
+    const missionControl = await missionControlResponse.json();
+    expect(missionControl).toMatchObject({
+      activity: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "tool",
+          source: "TRUEFORGE",
+          status: "COMPLETED",
+          title: "get_support_ticket",
+        }),
+        expect.objectContaining({
+          kind: "subagent",
+          source: "TRUEFORGE",
+          status: "COMPLETED",
+          title: "Policy Patch Reviewer",
+        }),
+        expect.objectContaining({
+          kind: "subagent",
+          source: "TRUEFORGE",
+          status: "COMPLETED",
+          title: "Evidence Provenance Verifier",
+        }),
+        expect.objectContaining({
+          kind: "sandbox",
+          source: "DAYTONA",
+          status: "COMPLETED",
+          title: "Sandbox analysis completed",
+        }),
+        expect.objectContaining({
+          evidence: {
+            bundleHash: bundle.bundleHash,
+            url: `/api/runs/${bundle.manifest.runId}/evidence`,
+          },
+          kind: "evidence",
+          status: "COMPLETED",
+          title: "Baseline Evidence Bundle finalized",
+        }),
+      ]),
+      approval: {
+        affectedCapability: "send_external_message",
+        base: {
+          hash: bundle.manifest.fingerprints.policy,
+          version: 1,
+        },
+        diff: [
+          {
+            after: [`${baseUrl}/api/trusted-destination`],
+            before: "*",
+            operation: "replace",
+            path: "/rules/send_external_message/destinations",
+          },
+        ],
+        evidenceJustification: {
+          bundleHash: bundle.bundleHash,
+          runId: bundle.manifest.runId,
+        },
+        pendingDecision: {
+          actionId: "action-apply-1",
+          callId: "call-apply-1",
+          sessionId: "session-investigation-1",
+          threadId: "main",
+          toolName: "apply_policy_patch",
+          turnId: "turn-investigation-1",
+        },
+        predictedOperationalImpact: {
+          deniedDestinations: "all destinations outside the allowlist",
+          protectedDocumentAccess: "unchanged",
+          trustedDestinations: [`${baseUrl}/api/trusted-destination`],
+        },
+      },
+      baseline: {
+        bundleHash: bundle.bundleHash,
+        complete: true,
+        evidenceUrl: `/api/runs/${bundle.manifest.runId}/evidence`,
+        runId: bundle.manifest.runId,
+        verdict: "VULNERABLE",
+      },
+      incident: {
+        id: bundle.manifest.incidentId,
+        status: "OPEN",
+      },
+      phase: "APPROVAL",
+      status: "AWAITING_APPROVAL",
+    });
+    expect(JSON.stringify(missionControl)).not.toContain(
+      bundle.manifest.canarySecret,
+    );
+
     const reconnected = createBlackboxApplication({
       incident: {
         baseUrl,
@@ -253,6 +342,15 @@ describe("Baseline Run product HTTP API", () => {
         },
         state: "AWAITING_APPROVAL",
       },
+    });
+    const reconstructedMissionControl = await reconnected.app.request(
+      "/api/mission-control",
+    );
+    expect(reconstructedMissionControl.status).toBe(200);
+    await expect(reconstructedMissionControl.json()).resolves.toMatchObject({
+      incident: { id: bundle.manifest.incidentId },
+      phase: "APPROVAL",
+      status: "AWAITING_APPROVAL",
     });
     await reconnected.shutdown();
   });

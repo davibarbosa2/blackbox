@@ -257,6 +257,9 @@ function buildApp(
       }
       return context.json(result);
     });
+    app.get("/api/mission-control", (context) =>
+      context.json(incident.coordinator.readMissionControl()),
+    );
     app.post("/api/incidents/:incidentId/remediation-decisions", async (context) => {
       const incidentId = context.req.param("incidentId");
       if (!UUID_V4.test(incidentId)) {

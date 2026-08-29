@@ -494,6 +494,17 @@ export class SqliteRemediationStore {
     return durableIncidentReadSchema.parse(JSON.parse(parsed.record_json));
   }
 
+  readLatest(): DurableIncidentRead | undefined {
+    const row = this.#database
+      .prepare(
+        "SELECT record_json FROM incidents ORDER BY rowid DESC LIMIT 1",
+      )
+      .get();
+    if (row === undefined) return undefined;
+    const parsed = rowSchema.parse(row);
+    return durableIncidentReadSchema.parse(JSON.parse(parsed.record_json));
+  }
+
   #readRequired(incidentId: string): DurableIncidentRead {
     const incident = this.read(incidentId);
     if (incident === undefined) {
