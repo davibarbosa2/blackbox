@@ -58,6 +58,7 @@ export function App(): ReactNode {
   const [snapshot, setSnapshot] = useState<MissionControlSnapshot | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [command, setCommand] = useState<CommandState>(INITIAL_COMMAND_STATE);
+  const [retrying, setRetrying] = useState(false);
 
   const refresh = useCallback(async (signal?: AbortSignal): Promise<void> => {
     try {
@@ -73,6 +74,13 @@ export function App(): ReactNode {
       );
     }
   }, []);
+
+  const retryConnection = useCallback(async (): Promise<void> => {
+    if (retrying) return;
+    setRetrying(true);
+    await refresh();
+    setRetrying(false);
+  }, [refresh, retrying]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -127,7 +135,13 @@ export function App(): ReactNode {
   );
 
   if (snapshot === null) {
-    return <LoadingView error={connectionError} onRetry={() => void refresh()} />;
+    return (
+      <LoadingView
+        error={connectionError}
+        onRetry={() => void retryConnection()}
+        retrying={retrying}
+      />
+    );
   }
 
   if (snapshot.phase === "READY") {
@@ -164,23 +178,38 @@ export function App(): ReactNode {
 interface LoadingViewProps {
   error: string | null;
   onRetry(): void;
+  retrying: boolean;
 }
 
 function LoadingView(props: LoadingViewProps): ReactNode {
   return (
     <div className="loading-view">
       <Brand />
-      <div className="loading-card" aria-live="polite">
-        <SignalMark active={props.error === null} />
+      <div
+        aria-busy={props.error === null || props.retrying}
+        aria-live="polite"
+        className="loading-card"
+      >
+        <SignalMark active={props.error === null || props.retrying} />
         <p className="eyebrow">Connecting to BLACKBOX</p>
         <h1>Restoring the Incident</h1>
         <p>Reading durable evidence and the exact pending TrueForge action.</p>
         {props.error === null ? null : (
           <div className="inline-error" role="alert">
-            <strong>Connection failed</strong>
+            <strong>
+              {props.retrying ? "Retrying connection" : "Connection failed"}
+            </strong>
             <span>{props.error}</span>
-            <button className="text-button" onClick={props.onRetry} type="button">
-              Retry connection
+            <button
+              aria-busy={props.retrying}
+              className="text-button"
+              disabled={props.retrying}
+              onClick={props.onRetry}
+              type="button"
+            >
+              {props.retrying
+                ? <><LoaderCircle aria-hidden="true" className="loading-icon" size={13} />{" "}Retrying connection</>
+                : "Retry connection"}
             </button>
           </div>
         )}
@@ -343,7 +372,7 @@ function JourneyRail(props: JourneyRailProps): ReactNode {
   const stages = [
     ["01", "Prove breach", "Baseline Run"],
     ["02", "Investigate", "TrueForge"],
-    ["03", "Approve", "Policy Patch"],
+    ["03", "Decide", "Policy Patch"],
     ["04", "Verify", "Replay + Control"],
     ["05", "Result", "Evidence verdict"],
   ] as const;
@@ -413,7 +442,12 @@ function NowStrip(props: NowStripProps): ReactNode {
   }, [copy.tone, progressSignature]);
   const quietlyWaiting = copy.tone === "live" && quietSeconds >= 12;
   return (
-    <section className={`now-strip tone-${copy.tone}`} aria-live="polite">
+    <section className={`now-strip tone-${copy.tone}`}>
+      <span aria-atomic="true" aria-live="polite" className="sr-only">
+        {quietlyWaiting
+          ? `Waiting for the next durable update. ${copy.title}`
+          : `${copy.eyebrow}. ${copy.title}`}
+      </span>
       <div className="now-label">
         <SignalMark active={copy.tone === "live" && !quietlyWaiting} />
         <span>{quietlyWaiting ? "Waiting" : "Now"}</span>
@@ -487,8 +521,11 @@ function BaselineScene(props: SceneProps): ReactNode {
             <span className="proof-glyph" aria-hidden="true"><AlertTriangle size={23} /></span>
             <strong>{titleCase(baseline.verdict)}</strong>
             <p>
-              <b>{comparison?.baseline.exactCanaryReceipts ?? 0}</b> exact Canary
-              receipt at the controlled External Sink.
+              <b>{comparison?.baseline.exactCanaryReceipts ?? 0}</b> exact Canary{" "}
+              {pluralize(
+                comparison?.baseline.exactCanaryReceipts ?? 0,
+                "receipt",
+              )} at the controlled External Sink.
             </p>
             <EvidenceLink
               bundleHash={baseline.bundleHash}
@@ -663,13 +700,19 @@ function VerificationLane(props: VerificationLaneProps): ReactNode {
         </StatusPill>
       </div>
       <div className="lane-path" aria-label={attack ? "Attack Replay path" : "Control Run path"}>
-        <LaneNode label={attack ? "Same ticket" : "Support request"} state={props.state === "WAITING" ? "waiting" : "complete"} />
+        <LaneNode
+          label={attack ? "Same ticket" : "Support request"}
+          state={finished ? "complete" : "waiting"}
+        />
         <span className="lane-connector" aria-hidden="true" />
-        <LaneNode label="Support Agent" state={props.state === "ACTIVE" ? "active" : finished ? "complete" : "waiting"} />
+        <LaneNode
+          label="Support Agent"
+          state={finished ? "complete" : "waiting"}
+        />
         <span className="lane-connector" aria-hidden="true" />
         <LaneNode
           label="Policy gate"
-          state={finished ? (attack ? "blocked" : "allowed") : props.state === "ACTIVE" ? "active" : "waiting"}
+          state={finished ? (attack ? "blocked" : "allowed") : "waiting"}
         />
         <span className="lane-connector" aria-hidden="true" />
         <LaneNode
@@ -701,7 +744,7 @@ function VerificationLane(props: VerificationLaneProps): ReactNode {
 
 interface LaneNodeProps {
   label: string;
-  state: "active" | "allowed" | "blocked" | "complete" | "empty" | "waiting";
+  state: "allowed" | "blocked" | "complete" | "empty" | "waiting";
 }
 
 function LaneNode(props: LaneNodeProps): ReactNode {
@@ -742,7 +785,10 @@ function ResultScene(props: SceneProps): ReactNode {
           accent="danger"
           evidenceUrl={comparison.baseline.evidenceUrl}
           eyebrow="Before · Baseline"
-          facts={[`${comparison.baseline.exactCanaryReceipts} exact Canary receipt`, "Policy allowed the send"]}
+          facts={[
+            `${comparison.baseline.exactCanaryReceipts} exact Canary ${pluralize(comparison.baseline.exactCanaryReceipts, "receipt")}`,
+            "Policy allowed the send",
+          ]}
           hash={comparison.baseline.bundleHash}
           result="Vulnerable"
         />
@@ -750,7 +796,10 @@ function ResultScene(props: SceneProps): ReactNode {
           accent="success"
           evidenceUrl={comparison.replay?.evidenceUrl ?? null}
           eyebrow="After · Attack Replay"
-          facts={[`${comparison.replay?.matchingCanaryReceipts ?? 0} matching sink receipts`, "Explicit policy denial"]}
+          facts={[
+            `${comparison.replay?.matchingCanaryReceipts ?? 0} matching sink ${pluralize(comparison.replay?.matchingCanaryReceipts ?? 0, "receipt")}`,
+            "Explicit policy denial",
+          ]}
           hash={comparison.replay?.bundleHash ?? null}
           result="Protected"
         />
@@ -758,7 +807,10 @@ function ResultScene(props: SceneProps): ReactNode {
           accent="success"
           evidenceUrl={comparison.control?.evidenceUrl ?? null}
           eyebrow="Capability · Control Run"
-          facts={[`${comparison.control?.trustedDestinationReceipts ?? 0} trusted destination receipt`, "Legitimate delivery preserved"]}
+          facts={[
+            `${comparison.control?.trustedDestinationReceipts ?? 0} trusted destination ${pluralize(comparison.control?.trustedDestinationReceipts ?? 0, "receipt")}`,
+            "Legitimate delivery preserved",
+          ]}
           hash={comparison.control?.bundleHash ?? null}
           result="Passed"
         />
@@ -949,24 +1001,22 @@ interface ActivityGroup {
 }
 
 function activityGroups(snapshot: MissionControlSnapshot): ActivityGroup[] {
-  const baselineHash = snapshot.comparison?.baseline.bundleHash;
-  const replayHash = snapshot.comparison?.replay?.bundleHash;
-  const controlHash = snapshot.comparison?.control?.bundleHash;
   const definitions = [
-    [baselineHash, "01 · Breach proof", "Baseline Run"],
-    [null, "02 · Agent work", "TrueForge Investigation"],
-    [replayHash, "04A · Security check", "Attack Replay"],
-    [controlHash, "04B · Capability check", "Control Run"],
+    ["BASELINE", "01 · Breach proof", "Baseline Run"],
+    ["INVESTIGATION", "02 · Agent work", "TrueForge Investigation"],
+    ["DECISION", "03 · Approval boundary", "Human decision"],
+    ["REPLAY", "04A · Security check", "Attack Replay"],
+    ["CONTROL", "04B · Capability check", "Control Run"],
   ] as const;
-  return definitions.flatMap(([hash, eyebrow, label]) => {
-    if (hash === undefined) return [];
-    const items = snapshot.activity.filter((item) =>
-      hash === null
-        ? item.evidence === null
-        : item.evidence?.bundleHash === hash,
-    );
+  return definitions.flatMap(([scope, eyebrow, label]) => {
+    const items = snapshot.activity.filter((item) => item.scope === scope);
     if (items.length === 0) return [];
-    return [{ evidence: items.find((item) => item.evidence !== null)?.evidence ?? null, eyebrow, items, label }];
+    return [{
+      evidence: items.find((item) => item.evidence !== null)?.evidence ?? null,
+      eyebrow,
+      items,
+      label,
+    }];
   });
 }
 
@@ -1029,10 +1079,17 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
   }, []);
   if (approval === null) return null;
   const busy = props.command.active !== null || props.decisionPending;
+  const waitingForDurableResult =
+    props.decisionPending && props.command.active === null;
   const diff = approval.diff[0];
   const trustedDestination = diff.after[0] ?? "Trusted Destination";
   return (
-    <dialog aria-labelledby="approval-title" className="approval-dialog" ref={dialogRef}>
+    <dialog
+      aria-labelledby="approval-title"
+      className="approval-dialog"
+      onCancel={(event) => event.preventDefault()}
+      ref={dialogRef}
+    >
       <div className="approval-shell">
         <header className="approval-header">
           <div className="approval-actor">
@@ -1045,11 +1102,25 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
         <div className="approval-content">
           <div className="approval-intro">
             <div>
-              <p className="eyebrow">One human decision · Policy unchanged</p>
-              <h1 id="approval-title">Allow messages only to the trusted support endpoint?</h1>
-              <p>BLACKBOX will apply exactly this restrictive change—nothing else—then verify it automatically.</p>
+              <p className="eyebrow">
+                {waitingForDurableResult
+                  ? "Decision submitted · Awaiting durable state"
+                  : "One human decision · Policy unchanged"}
+              </p>
+              <h1 id="approval-title">
+                {waitingForDurableResult
+                  ? "Policy decision is being recorded"
+                  : "Allow messages only to the trusted support endpoint?"}
+              </h1>
+              <p>
+                {waitingForDurableResult
+                  ? "BLACKBOX is waiting for the durable Incident transition before it shows any outcome."
+                  : "BLACKBOX will apply exactly this restrictive change—nothing else—then verify it automatically."}
+              </p>
             </div>
-            <span className="decision-badge">Decision required</span>
+            <span className="decision-badge">
+              {waitingForDurableResult ? "Processing" : "Decision required"}
+            </span>
           </div>
 
           <section className="human-diff" aria-labelledby="human-diff-title">
@@ -1102,24 +1173,48 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
         </div>
 
         <footer className="approval-actions">
-          <p><strong>Approval changes policy.</strong> Verification remains a separate, automatic evidence step.</p>
-          <div>
-            <button className="secondary-button" disabled={busy} onClick={props.onDeny} type="button">
-              {props.command.active === "DENY" ? "Recording decision…" : "Keep current policy"}
-            </button>
-            <button
-              aria-busy={props.command.active === "ALLOW" || props.decisionPending}
-              className="primary-button approve-button"
-              disabled={busy}
-              onClick={props.onApprove}
-              type="button"
-            >
-              <span>{props.command.active === "ALLOW" || props.decisionPending ? "Resuming TrueForge…" : "Approve exact Policy Patch"}</span>
-              {props.command.active === "ALLOW" || props.decisionPending
-                ? <LoaderCircle aria-hidden="true" className="loading-icon" size={15} />
-                : <ArrowRight aria-hidden="true" size={15} />}
-            </button>
-          </div>
+          <p>
+            <strong>{waitingForDurableResult ? "Decision submitted." : "Approval changes policy."}</strong>{" "}
+            {waitingForDurableResult
+              ? "Waiting for BLACKBOX to record the durable result."
+              : "Verification remains a separate, automatic evidence step."}
+          </p>
+          {waitingForDurableResult ? (
+            <div className="decision-result-pending" role="status">
+              <LoaderCircle aria-hidden="true" className="loading-icon" size={15} />
+              <span>
+                <strong>Decision submitted</strong>
+                <small>Waiting for durable Incident state…</small>
+              </span>
+            </div>
+          ) : (
+            <div>
+              <button
+                aria-busy={props.command.active === "DENY"}
+                className="secondary-button"
+                disabled={busy}
+                onClick={props.onDeny}
+                type="button"
+              >
+                <span>{props.command.active === "DENY" ? "Recording decision…" : "Keep current policy"}</span>
+                {props.command.active === "DENY"
+                  ? <LoaderCircle aria-hidden="true" className="loading-icon" size={15} />
+                  : null}
+              </button>
+              <button
+                aria-busy={props.command.active === "ALLOW"}
+                className="primary-button approve-button"
+                disabled={busy}
+                onClick={props.onApprove}
+                type="button"
+              >
+                <span>{props.command.active === "ALLOW" ? "Resuming TrueForge…" : "Approve exact Policy Patch"}</span>
+                {props.command.active === "ALLOW"
+                  ? <LoaderCircle aria-hidden="true" className="loading-icon" size={15} />
+                  : <ArrowRight aria-hidden="true" size={15} />}
+              </button>
+            </div>
+          )}
         </footer>
       </div>
     </dialog>
@@ -1224,8 +1319,28 @@ function sceneCopy(snapshot: MissionControlSnapshot): SceneCopy {
     case "BASELINE_INCONCLUSIVE":
       return { description: "The attack did not produce complete evidence, so BLACKBOX will not claim a breach.", eyebrow: "05 · No supported verdict", title: "Breach proof is inconclusive", tone: "warning" };
     case "VALIDATION_FAILED":
-      return { description: "A required verification gate did not finalize. Any restrictive policy remains active, but containment is not claimed.", eyebrow: "05 · Claim withheld", title: "Verification is incomplete", tone: "danger" };
+      return validationFailureSceneCopy(snapshot);
   }
+}
+
+function validationFailureSceneCopy(
+  snapshot: MissionControlSnapshot,
+): SceneCopy {
+  const title = snapshot.verification !== null
+    ? "Verification is incomplete"
+    : approvalCompleted(snapshot.activity)
+      ? "Approved policy change could not be validated"
+      : investigationCompleted(snapshot.activity)
+        ? "Policy Patch did not pass validation"
+        : "TrueForge investigation did not complete";
+  return {
+    description:
+      snapshot.failure?.detail ??
+      "A required Remediation gate did not finalize, so BLACKBOX is withholding containment.",
+    eyebrow: "05 · Claim withheld",
+    title,
+    tone: "danger",
+  };
 }
 
 function journeyStepState(
@@ -1239,17 +1354,25 @@ function journeyStepState(
       snapshot.comparison?.containment === null &&
       index === 3
     ) {
-      return "skipped";
+      return "incomplete";
     }
     if (snapshot.status === "DENIED" || snapshot.status === "STALE") {
       return index <= 2 ? "complete" : "skipped";
     }
     if (snapshot.status === "BASELINE_INCONCLUSIVE") {
-      return "skipped";
+      return index === 0 ? "incomplete" : "skipped";
     }
     if (snapshot.status === "VALIDATION_FAILED") {
       if (index === 0) return snapshot.baseline === null ? "skipped" : "complete";
       if (index === 1) {
+        if (
+          snapshot.activity.some(
+            (item) =>
+              item.scope === "INVESTIGATION" && item.status === "FAILED",
+          )
+        ) {
+          return "incomplete";
+        }
         return snapshot.verification !== null ||
           approvalCompleted(snapshot.activity) ||
           investigationCompleted(snapshot.activity)
@@ -1445,7 +1568,13 @@ function sourceLabel(source: MissionControlActivity["source"]): string {
 }
 
 function titleCase(value: string): string {
-  return value.toLowerCase().replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
+  return value
+    .toLowerCase()
+    .replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
+}
+
+function pluralize(count: number, singular: string): string {
+  return count === 1 ? singular : `${singular}s`;
 }
 
 function shortHash(value: string): string {

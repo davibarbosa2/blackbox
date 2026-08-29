@@ -164,11 +164,18 @@ describe("Incident coordinator observability", () => {
     const executeInvestigation = vi.fn(
       async (
         request: InvestigationExecutionRequest,
-      ): Promise<InvestigationExecutionEvidence> =>
-        investigationEvidence(request, [
+      ): Promise<InvestigationExecutionEvidence> => {
+        request.onMilestone?.({
+          kind: "EVIDENCE_REVIEW_STARTED",
+          occurredAt: "2026-08-28T12:00:01.000Z",
+          sessionId: "session-investigation",
+          sourceEventId: "event-evidence-started-before-failure",
+        });
+        return investigationEvidence(request, [
           request.trustedDestination,
           "https://untrusted.example/messages",
-        ]),
+        ]);
+      },
     );
     const runtime: TrueForgeRuntime = {
       executeBaseline: async ({ runId }) => baselineEvidence(runId),
@@ -210,6 +217,16 @@ describe("Incident coordinator observability", () => {
     });
     expect(policy.fingerprint()).toBe(
       "93d054afcb184730a08510550d5ed932dcf78ae88011a76b16423f615df0210c",
+    );
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "event-evidence-started-before-failure",
+          scope: "INVESTIGATION",
+          status: "FAILED",
+          title: "Evidence provenance review started",
+        }),
+      ]),
     );
     remediations.close();
   });
@@ -330,6 +347,20 @@ describe("Incident coordinator observability", () => {
         },
       });
     });
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "event-turn-live",
+          scope: "INVESTIGATION",
+          status: "COMPLETED",
+        }),
+        expect.objectContaining({
+          id: "event-evidence-live",
+          scope: "INVESTIGATION",
+          status: "COMPLETED",
+        }),
+      ]),
+    );
     await coordinator.shutdown();
     remediations.close();
   });

@@ -18,6 +18,13 @@ const activitySchema = z.strictObject({
     "failure",
   ]),
   occurredAt: z.string().nullable(),
+  scope: z.enum([
+    "BASELINE",
+    "INVESTIGATION",
+    "DECISION",
+    "REPLAY",
+    "CONTROL",
+  ]),
   source: z.enum([
     "BLACKBOX",
     "TRUEFORGE",

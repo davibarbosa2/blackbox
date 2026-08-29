@@ -45,12 +45,16 @@ afterEach(() => {
 
 describe("Mission Control browser workflow", () => {
   it("surfaces a connection failure and retries the durable read", async () => {
+    let releaseRetry = (): void => undefined;
+    const retryGate = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
     let readCount = 0;
     const fetcher = vi.fn(async () => {
       readCount += 1;
-      return readCount === 1
-        ? jsonResponse(readySnapshot(), 503)
-        : jsonResponse(readySnapshot());
+      if (readCount === 1) return jsonResponse(readySnapshot(), 503);
+      await retryGate;
+      return jsonResponse(readySnapshot());
     });
     vi.stubGlobal("fetch", fetcher);
 
@@ -59,6 +63,13 @@ describe("Mission Control browser workflow", () => {
       "Mission Control read failed with HTTP 503",
     );
     fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
+
+    const retrying = screen.getByRole("button", { name: "Retrying connection" });
+    expect(retrying.getAttribute("aria-busy")).toBe("true");
+    expect(retrying.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(retrying);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    releaseRetry();
 
     expect(
       await screen.findByRole("button", { name: /Run the live Incident/ }),
@@ -142,6 +153,9 @@ describe("Mission Control browser workflow", () => {
     expect(
       screen.getAllByText("Evidence Provenance Verifier"),
     ).toHaveLength(2);
+    const cancelEvent = new Event("cancel", { cancelable: true });
+    fireEvent(dialog, cancelEvent);
+    expect(cancelEvent.defaultPrevented).toBe(true);
 
     const approve = screen.getByRole("button", {
       name: /Approve exact Policy Patch/,
@@ -165,10 +179,35 @@ describe("Mission Control browser workflow", () => {
     releaseDecision();
   });
 
+  it("shows neutral pending-decision progress when the submitted choice is unknown", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...awaitingApprovalSnapshot(),
+      decisionPending: true,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("Decision submitted");
+    expect(status.querySelector(".loading-icon")).not.toBeNull();
+    expect(
+      screen.getByRole("heading", { name: "Policy decision is being recorded" }),
+    ).not.toBeNull();
+    expect(screen.queryByText("Decision required")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Approve exact/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Keep current policy" })).toBeNull();
+  });
+
   it("renders an inconclusive replay without calling it failed and surfaces denial errors", async () => {
     const snapshot = failedVerificationSnapshot();
+    let releaseDenial = (): void => undefined;
+    const denialGate = new Promise<void>((resolve) => {
+      releaseDenial = resolve;
+    });
     const fetcher = vi.fn(async (input: string) => {
       if (input.includes("/remediation-decisions")) {
+        await denialGate;
         return jsonResponse(readySnapshot(), 500);
       }
       return jsonResponse(awaitingApprovalSnapshot());
@@ -180,6 +219,10 @@ describe("Mission Control browser workflow", () => {
       name: "Keep current policy",
     });
     fireEvent.click(deny);
+    await waitFor(() => expect(deny.getAttribute("aria-busy")).toBe("true"));
+    expect(deny.textContent).toContain("Recording decision");
+    expect(deny.querySelector(".loading-icon")).not.toBeNull();
+    releaseDenial();
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Remediation decision failed with HTTP 500",
     );
@@ -201,7 +244,7 @@ describe("Mission Control browser workflow", () => {
     expect(replayStep?.getAttribute("data-state")).toBe("inconclusive");
     expect(replayStep?.textContent).toContain("Inconclusive");
     const journey = screen.getByRole("navigation", { name: "Incident journey" });
-    expect(within(journey).getByText("Approve").closest("li")?.dataset.state).toBe(
+    expect(within(journey).getByText("Decide").closest("li")?.dataset.state).toBe(
       "complete",
     );
     expect(within(journey).getByText("Verify").closest("li")?.dataset.state).toBe(
@@ -244,6 +287,7 @@ describe("Mission Control browser workflow", () => {
           id: "event-review-started",
           kind: "subagent",
           occurredAt: "2026-08-29T21:00:00.000Z",
+          scope: "INVESTIGATION",
           source: "TRUEFORGE",
           status: "ACTIVE",
           title: "Evidence provenance review started",
@@ -269,6 +313,7 @@ describe("Mission Control browser workflow", () => {
         id: "tool-read-document",
         kind: "tool",
         occurredAt: "2026-08-29T21:00:00.000Z",
+        scope: "BASELINE",
         source: "TRUEFORGE",
         status: "COMPLETED",
         title: "read_internal_document",
@@ -284,6 +329,128 @@ describe("Mission Control browser workflow", () => {
     expect(screen.getByText("Canary document").closest("article")?.dataset.state).toBe(
       "active",
     );
+    const drawer = screen.getByText("Evidence & agent trace").closest("details");
+    if (!(drawer instanceof HTMLElement)) throw new Error("Evidence drawer missing");
+    fireEvent.click(within(drawer).getByText("Evidence & agent trace"));
+    expect(within(drawer).getByText("Baseline Run")).not.toBeNull();
+    expect(within(drawer).queryByText("TrueForge Investigation")).toBeNull();
+  });
+
+  it("keeps verification progress at lane level until durable node evidence exists", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...incidentSnapshot(),
+      activity: [
+        {
+          detail: "Reported from the durable BLACKBOX Run timeline.",
+          evidence: null,
+          id: "replay-state-executing",
+          kind: "phase",
+          occurredAt: "2026-08-29T21:00:00.000Z",
+          scope: "REPLAY",
+          source: "BLACKBOX",
+          status: "ACTIVE",
+          title: "Support Agent turn in progress",
+        },
+      ],
+      phase: "VERIFICATION",
+      status: "VERIFYING",
+      verification: {
+        control: { result: null, runId: null, state: "WAITING" },
+        policyReadback: { hash: CANDIDATE_HASH, state: "MATCHED", version: 2 },
+        replay: { result: null, runId: "replay-1", state: "ACTIVE" },
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    const view = render(<App />);
+    await screen.findAllByRole("heading", { name: "Attack Replay" });
+
+    expect(view.container.querySelector('.verification-lane.attack[data-state="active"]')).not.toBeNull();
+    expect(view.container.querySelectorAll('.verification-lane.attack .lane-node[data-state="active"]')).toHaveLength(0);
+    const drawer = screen.getByText("Evidence & agent trace").closest("details");
+    if (!(drawer instanceof HTMLElement)) throw new Error("Evidence drawer missing");
+    fireEvent.click(within(drawer).getByText("Evidence & agent trace"));
+    expect(within(drawer).getByText("Attack Replay")).not.toBeNull();
+    expect(within(drawer).queryByText("TrueForge Investigation")).toBeNull();
+  });
+
+  it("names an investigation failure without pretending verification started", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...incidentSnapshot(),
+      activity: [
+        {
+          detail: "Sanitized durable TrueForge stream milestone.",
+          evidence: null,
+          id: "event-review-started",
+          kind: "subagent",
+          occurredAt: "2026-08-29T21:00:00.000Z",
+          scope: "INVESTIGATION",
+          source: "TRUEFORGE",
+          status: "FAILED",
+          title: "Evidence provenance review started",
+        },
+      ],
+      failure: {
+        detail: "TrueForge did not complete the investigation boundary.",
+        title: "Remediation validation failed",
+      },
+      phase: "RESULT",
+      status: "VALIDATION_FAILED",
+      verification: null,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    expect(
+      await screen.findAllByRole("heading", {
+        name: "TrueForge investigation did not complete",
+      }),
+    ).toHaveLength(2);
+    const journey = screen.getByRole("navigation", { name: "Incident journey" });
+    expect(within(journey).getByText("Investigate").closest("li")?.dataset.state).toBe(
+      "incomplete",
+    );
+  });
+
+  it("records a declined human decision without showing an approval check", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...incidentSnapshot(),
+      activity: [
+        {
+          detail: "The exact pending TrueForge Policy Patch action was declined by a human.",
+          evidence: null,
+          id: "call-1:human-decision:deny",
+          kind: "phase",
+          occurredAt: "2026-08-29T21:00:00.000Z",
+          scope: "DECISION",
+          source: "BLACKBOX",
+          status: "COMPLETED",
+          title: "Policy Patch declined by human",
+        },
+      ],
+      failure: {
+        detail: "The Capability Policy was not changed and verification did not start.",
+        title: "Policy Patch denied",
+      },
+      phase: "RESULT",
+      status: "DENIED",
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const journey = await screen.findByRole("navigation", {
+      name: "Incident journey",
+    });
+    expect(within(journey).getByText("Decide").closest("li")?.dataset.state).toBe(
+      "complete",
+    );
+    expect(within(journey).queryByText("Approve")).toBeNull();
+    const drawer = screen.getByText("Evidence & agent trace").closest("details");
+    if (!(drawer instanceof HTMLElement)) throw new Error("Evidence drawer missing");
+    fireEvent.click(within(drawer).getByText("Evidence & agent trace"));
+    expect(within(drawer).getByText("Human decision")).not.toBeNull();
   });
 
   it("explains an empty evidence drawer instead of opening a blank panel", async () => {
@@ -321,7 +488,7 @@ describe("Mission Control browser workflow", () => {
     ).toBeNull();
     const journey = screen.getByRole("navigation", { name: "Incident journey" });
     expect(within(journey).getByText("Verify").closest("li")?.dataset.state).toBe(
-      "skipped",
+      "incomplete",
     );
   });
 
@@ -347,7 +514,7 @@ describe("Mission Control browser workflow", () => {
       name: "Incident journey",
     });
     expect(within(journey).getByText("Prove breach").closest("li")?.dataset.state).toBe(
-      "skipped",
+      "incomplete",
     );
   });
 
@@ -611,6 +778,7 @@ function activity(
     id,
     kind,
     occurredAt: null,
+    scope: "INVESTIGATION" as const,
     source,
     status: "COMPLETED" as const,
     title,

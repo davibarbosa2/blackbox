@@ -306,6 +306,9 @@ pre,
 }
 
 .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 0;
   color: var(--violet-soft);
   background: transparent;
@@ -313,6 +316,11 @@ pre,
   font-weight: 750;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.text-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .status-pill {
@@ -1473,11 +1481,6 @@ pre,
   line-height: 1.25;
 }
 
-.lane-node[data-state="active"] i {
-  border-color: var(--live);
-  background: rgb(112 167 255 / 10%);
-}
-
 .lane-node[data-state="complete"] i,
 .lane-node[data-state="allowed"] i {
   border-color: rgb(96 221 160 / 35%);
@@ -2245,6 +2248,32 @@ pre,
   gap: 9px;
 }
 
+.decision-result-pending {
+  align-items: center;
+  min-height: 43px;
+  min-width: 280px;
+  padding: 8px 13px;
+  border: 1px solid rgb(112 167 255 / 24%);
+  border-radius: 9px;
+  color: var(--live);
+  background: rgb(112 167 255 / 7%);
+}
+
+.decision-result-pending span {
+  display: grid;
+  gap: 1px;
+}
+
+.decision-result-pending strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.decision-result-pending small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
 .approval-actions .primary-button,
 .approval-actions .secondary-button {
   min-height: 43px;
@@ -2647,6 +2676,11 @@ pre,
   .approval-actions > div {
     display: grid;
     grid-template-columns: 0.75fr 1.25fr;
+  }
+
+  .approval-actions > .decision-result-pending {
+    grid-template-columns: auto minmax(0, 1fr);
+    min-width: 0;
   }
 
   .approve-button {

@@ -60,16 +60,19 @@ export function createMissionControlSnapshot(
       ...timelineActivity(
         baselineRun?.timeline ?? [],
         reference,
+        "BASELINE",
         "Baseline Evidence Bundle finalized",
       ),
       ...timelineActivity(
         replayRun?.timeline ?? [],
         evidenceReference(replay),
+        "REPLAY",
         "Attack Replay Evidence Bundle finalized",
       ),
       ...timelineActivity(
         controlRun?.timeline ?? [],
         evidenceReference(control),
+        "CONTROL",
         "Control Run Evidence Bundle finalized",
       ),
       ...remediationActivity(incident),
@@ -171,6 +174,7 @@ function evidenceReference(
 function timelineActivity(
   timeline: readonly EvidenceRecord[],
   evidence: EvidenceReference | null,
+  scope: MissionControlActivity["scope"],
   finalizedTitle: string,
 ): MissionControlActivity[] {
   const activity: MissionControlActivity[] = [];
@@ -182,6 +186,7 @@ function timelineActivity(
       record,
       evidence,
       record.id === currentStateId,
+      scope,
     );
     if (item !== undefined) activity.push(item);
   }
@@ -192,6 +197,7 @@ function timelineActivity(
       id: `${evidence.bundleHash}:finalized`,
       kind: "evidence",
       occurredAt: null,
+      scope,
       source: "BLACKBOX",
       status: "COMPLETED",
       title: finalizedTitle,
@@ -204,6 +210,7 @@ function activityFromRecord(
   record: EvidenceRecord,
   evidence: EvidenceReference | null,
   currentState: boolean,
+  scope: MissionControlActivity["scope"],
 ): MissionControlActivity | undefined {
   if (record.type === "run.state_changed") {
     const title = {
@@ -218,6 +225,7 @@ function activityFromRecord(
       id: record.id,
       kind: "phase",
       occurredAt: record.occurredAt,
+      scope,
       source: "BLACKBOX",
       status:
         record.state === "COMPLETED" || !currentState
@@ -233,6 +241,7 @@ function activityFromRecord(
       id: record.id,
       kind: "tool",
       occurredAt: record.occurredAt,
+      scope,
       source: "TRUEFORGE",
       status: "COMPLETED",
       title: record.toolName,
@@ -245,6 +254,7 @@ function activityFromRecord(
       id: record.id,
       kind: "evidence",
       occurredAt: record.occurredAt,
+      scope,
       source: "EXTERNAL_SINK",
       status: "COMPLETED",
       title: "External Sink receipt recorded",
@@ -257,6 +267,7 @@ function activityFromRecord(
       id: record.id,
       kind: "evidence",
       occurredAt: record.occurredAt,
+      scope,
       source: "TRUSTED_DESTINATION",
       status: "COMPLETED",
       title: "Trusted workflow receipt recorded",
@@ -269,6 +280,7 @@ function activityFromRecord(
       id: record.id,
       kind: "evidence",
       occurredAt: record.occurredAt,
+      scope,
       source: "BLACKBOX",
       status: "COMPLETED",
       title: "External Sink observation closed",
@@ -281,6 +293,7 @@ function activityFromRecord(
       id: record.id,
       kind: "evidence",
       occurredAt: record.occurredAt,
+      scope,
       source: "CAPABILITY_POLICY",
       status: "COMPLETED",
       title: "Outbound policy evaluated",
@@ -293,6 +306,7 @@ function activityFromRecord(
       id: record.id,
       kind: "failure",
       occurredAt: record.occurredAt,
+      scope,
       source: "BLACKBOX",
       status: "FAILED",
       title: "Run infrastructure failed",
@@ -308,12 +322,17 @@ function remediationActivity(
   if (remediation === undefined) return [];
   const progress = remediation.investigationProgress?.milestones ?? [];
   const progressKinds = new Set(progress.map((milestone) => milestone.kind));
+  const investigationComplete =
+    "analysis" in remediation &&
+    "subagents" in remediation &&
+    remediation.analysis !== undefined &&
+    remediation.subagents !== undefined;
   const streamed = progress.map((milestone) =>
     activityFromInvestigationMilestone(
       milestone,
       remediation.state,
       progressKinds,
-      "analysis" in remediation && remediation.analysis !== undefined,
+      investigationComplete,
     ),
   );
   const decision = "decision" in remediation ? remediation.decision : undefined;
@@ -330,6 +349,7 @@ function remediationActivity(
             id: `${decision.callId}:human-decision:${decision.decision}`,
             kind: "phase",
             occurredAt: decision.decidedAt,
+            scope: "DECISION",
             source: "BLACKBOX",
             status: "COMPLETED",
             title:
@@ -352,6 +372,7 @@ function remediationActivity(
     id: subagent.doneEventId,
     kind: "subagent" as const,
     occurredAt: null,
+    scope: "INVESTIGATION" as const,
     source: "TRUEFORGE" as const,
     status: "COMPLETED" as const,
     title:
@@ -367,6 +388,7 @@ function remediationActivity(
       id: remediation.analysis.execution.toolCallId,
       kind: "sandbox",
       occurredAt: null,
+      scope: "INVESTIGATION",
       source: "DAYTONA",
       status: "COMPLETED",
       title: "Sandbox analysis completed",
@@ -383,19 +405,20 @@ function activityFromInvestigationMilestone(
   milestone: InvestigationMilestone,
   remediationState: DurableIncidentRead["remediation"]["state"],
   progressKinds: ReadonlySet<InvestigationMilestone["kind"]>,
-  analysisComplete: boolean,
+  investigationComplete: boolean,
 ): MissionControlActivity {
   const completed =
-    remediationState !== "INVESTIGATING" ||
     milestone.kind === "INVESTIGATOR_MCP_INITIALIZED" ||
     milestone.kind === "POLICY_REVIEW_COMPLETED" ||
     milestone.kind === "EVIDENCE_REVIEW_COMPLETED" ||
     milestone.kind === "POLICY_ACTION_OBSERVED" ||
     (milestone.kind === "POLICY_REVIEW_STARTED" &&
-      progressKinds.has("POLICY_REVIEW_COMPLETED")) ||
+      (progressKinds.has("POLICY_REVIEW_COMPLETED") || investigationComplete)) ||
     (milestone.kind === "EVIDENCE_REVIEW_STARTED" &&
-      progressKinds.has("EVIDENCE_REVIEW_COMPLETED")) ||
-    (milestone.kind === "ANALYSIS_SANDBOX_CREATED" && analysisComplete);
+      (progressKinds.has("EVIDENCE_REVIEW_COMPLETED") || investigationComplete)) ||
+    (milestone.kind === "ANALYSIS_SANDBOX_CREATED" && investigationComplete) ||
+    (milestone.kind === "TURN_STARTED" &&
+      (progressKinds.has("POLICY_ACTION_OBSERVED") || investigationComplete));
   const display = {
     ANALYSIS_SANDBOX_CREATED: {
       kind: "sandbox" as const,
@@ -445,8 +468,14 @@ function activityFromInvestigationMilestone(
     id: milestone.sourceEventId,
     kind: display.kind,
     occurredAt: milestone.occurredAt,
+    scope: "INVESTIGATION",
     source: display.source,
-    status: completed ? "COMPLETED" : "ACTIVE",
+    status:
+      completed
+        ? "COMPLETED"
+        : remediationState === "VALIDATION_FAILED"
+          ? "FAILED"
+          : "ACTIVE",
     title: display.title,
   };
 }
