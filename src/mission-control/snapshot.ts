@@ -110,6 +110,24 @@ const REPLAY_EQUIVALENT_FINGERPRINTS = [
 ] as const;
 const CONTROL_EQUIVALENT_FINGERPRINTS = ["agent", "model", "tools"] as const;
 
+const verificationSchema = z.strictObject({
+  control: z.strictObject({
+    result: z.enum(["PASSED", "INCONCLUSIVE"]).nullable(),
+    runId: z.string().nullable(),
+    state: z.enum(["WAITING", "ACTIVE", "COMPLETED"]),
+  }),
+  policyReadback: z.strictObject({
+    hash: z.string().length(64),
+    state: z.literal("MATCHED"),
+    version: z.number().int().positive(),
+  }),
+  replay: z.strictObject({
+    result: z.enum(["PROTECTED", "INCONCLUSIVE"]).nullable(),
+    runId: z.string().nullable(),
+    state: z.enum(["WAITING", "ACTIVE", "COMPLETED"]),
+  }),
+});
+
 export const missionControlSnapshotSchema = z.strictObject({
   activity: z.array(activitySchema),
   approval: approvalSchema.nullable(),
@@ -151,6 +169,7 @@ export const missionControlSnapshotSchema = z.strictObject({
     "VERIFIED",
     "VALIDATION_FAILED",
   ]),
+  verification: verificationSchema.nullable(),
 });
 
 export type MissionControlSnapshot = z.infer<
@@ -181,6 +200,7 @@ export function createMissionControlSnapshot(
           : "READY");
   const comparison = createComparison(baseline, replay, control, incident);
   const failure = readFailure(baselineRun, incident, comparison);
+  const verification = createVerification(incident, comparison);
 
   return missionControlSnapshotSchema.parse({
     activity: [
@@ -230,6 +250,7 @@ export function createMissionControlSnapshot(
         : { id: incident.incidentId, status: incident.incidentStatus },
     phase: phaseForStatus(status),
     status,
+    verification,
   });
 }
 
@@ -577,6 +598,52 @@ function equivalentFingerprints(
       baseline.manifest.fingerprints[fingerprint] ===
       verification.manifest.fingerprints[fingerprint],
   );
+}
+
+function createVerification(
+  incident: DurableIncidentRead | undefined,
+  comparison: MissionControlSnapshot["comparison"],
+): MissionControlSnapshot["verification"] {
+  const remediation = incident?.remediation;
+  if (
+    remediation === undefined ||
+    (remediation.state !== "APPLIED" &&
+      remediation.state !== "VERIFYING" &&
+      remediation.state !== "VERIFIED" &&
+      remediation.state !== "VALIDATION_FAILED") ||
+    remediation.policyReadback === undefined
+  ) {
+    return null;
+  }
+  const replay = comparison?.replay ?? null;
+  const control = comparison?.control ?? null;
+  return {
+    control: {
+      result: control?.result ?? null,
+      runId: control?.runId ?? null,
+      state:
+        control !== null
+          ? "COMPLETED"
+          : remediation.state === "VERIFYING" && replay !== null
+            ? "ACTIVE"
+            : "WAITING",
+    },
+    policyReadback: {
+      hash: remediation.policyReadback.hash,
+      state: "MATCHED",
+      version: remediation.policyReadback.version,
+    },
+    replay: {
+      result: replay?.result ?? null,
+      runId: replay?.runId ?? null,
+      state:
+        replay !== null
+          ? "COMPLETED"
+          : remediation.state === "VERIFYING"
+            ? "ACTIVE"
+            : "WAITING",
+    },
+  };
 }
 
 function readFailure(

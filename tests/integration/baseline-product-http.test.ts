@@ -703,6 +703,23 @@ describe("Baseline Run product HTTP API", () => {
       },
       phase: "RESULT",
       status: "VERIFIED",
+      verification: {
+        control: {
+          result: "PASSED",
+          runId: control.manifest.runId,
+          state: "COMPLETED",
+        },
+        policyReadback: {
+          hash: verified.remediation.policyReadback.hash,
+          state: "MATCHED",
+          version: 2,
+        },
+        replay: {
+          result: "PROTECTED",
+          runId: replay.manifest.runId,
+          state: "COMPLETED",
+        },
+      },
     });
     expect(JSON.stringify(missionControl)).not.toContain(
       baseline.manifest.canarySecret,
@@ -785,6 +802,20 @@ describe("Baseline Run product HTTP API", () => {
       },
       phase: "RESULT",
       status: "VALIDATION_FAILED",
+      verification: {
+        control: {
+          result: "PASSED",
+          state: "COMPLETED",
+        },
+        policyReadback: {
+          state: "MATCHED",
+          version: 2,
+        },
+        replay: {
+          result: "INCONCLUSIVE",
+          state: "COMPLETED",
+        },
+      },
     });
     const persistedPolicy = createSqliteCapabilityPolicy(
       join(runtimeDirectory, "blackbox.sqlite"),
