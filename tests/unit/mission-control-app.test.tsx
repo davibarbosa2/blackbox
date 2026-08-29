@@ -61,7 +61,7 @@ describe("Mission Control browser workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
 
     expect(
-      await screen.findByRole("button", { name: /Start live Incident/ }),
+      await screen.findByRole("button", { name: /Run the live Incident/ }),
     ).not.toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -86,7 +86,7 @@ describe("Mission Control browser workflow", () => {
 
     const view = render(<App />);
     const start = await screen.findByRole("button", {
-      name: /Start live Incident/,
+      name: /Run the live Incident/,
     });
     fireEvent.click(start);
     fireEvent.click(start);
@@ -106,7 +106,7 @@ describe("Mission Control browser workflow", () => {
     expect(pollingSignal?.aborted).toBe(true);
   });
 
-  it("shows investigation proof and submits the exact approval action", async () => {
+  it("frames one concise human decision and submits the exact approval action", async () => {
     let releaseDecision = (): void => undefined;
     const decisionGate = new Promise<void>((resolve) => {
       releaseDecision = resolve;
@@ -123,16 +123,28 @@ describe("Mission Control browser workflow", () => {
 
     render(<App />);
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Policy Patch Reviewer")).not.toBeNull();
     expect(
-      within(dialog).getByText("Evidence Provenance Verifier"),
+      within(dialog).getByRole("heading", {
+        name: "Allow messages only to the trusted support endpoint?",
+      }),
     ).not.toBeNull();
     expect(
-      within(dialog).getByText("Sandbox analysis completed"),
+      within(dialog).getByText("Same attack will be blocked"),
     ).not.toBeNull();
+    expect(
+      within(dialog).getByRole("link", { name: /Open in TrueForge/ }),
+    ).not.toBeNull();
+    expect(dialog.querySelector("details")?.open).toBe(false);
+    expect(dialog.textContent).toContain("Affected capability");
+    expect(dialog.textContent).toContain("send_external_message");
+    expect(dialog.textContent).toContain("Predicted operational impact");
+    expect(dialog.textContent).toContain("Evidence justification");
+    expect(
+      screen.getAllByText("Evidence Provenance Verifier"),
+    ).toHaveLength(2);
 
     const approve = screen.getByRole("button", {
-      name: /Approve & verify automatically/,
+      name: /Approve exact Policy Patch/,
     });
     fireEvent.click(approve);
     await waitFor(() => {
@@ -164,7 +176,9 @@ describe("Mission Control browser workflow", () => {
     vi.stubGlobal("fetch", fetcher);
 
     const view = render(<App />);
-    const deny = await screen.findByRole("button", { name: "Deny patch" });
+    const deny = await screen.findByRole("button", {
+      name: "Keep current policy",
+    });
     fireEvent.click(deny);
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Remediation decision failed with HTTP 500",
@@ -186,7 +200,187 @@ describe("Mission Control browser workflow", () => {
     const replayStep = replayHeading.closest("article");
     expect(replayStep?.getAttribute("data-state")).toBe("inconclusive");
     expect(replayStep?.textContent).toContain("Inconclusive");
-    expect(replayStep?.textContent).toContain("!");
+    const journey = screen.getByRole("navigation", { name: "Incident journey" });
+    expect(within(journey).getByText("Approve").closest("li")?.dataset.state).toBe(
+      "complete",
+    );
+    expect(within(journey).getByText("Verify").closest("li")?.dataset.state).toBe(
+      "skipped",
+    );
+  });
+
+  it("makes the verified result a distinct final act with one dominant conclusion", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(verifiedSnapshot())));
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Attack blocked. Support still works.",
+      }),
+    ).not.toBeNull();
+    const progress = screen.getByRole("navigation", {
+      name: "Incident journey",
+    });
+    const resultStage = within(progress).getByText("Result").closest("li");
+    expect(resultStage?.getAttribute("aria-current")).toBe("step");
+    expect(screen.getByText("1 exact Canary receipt")).not.toBeNull();
+    expect(screen.getByText("0 matching sink receipts")).not.toBeNull();
+    expect(screen.getByText("1 trusted destination receipt")).not.toBeNull();
+    const trace = screen.getByText("Evidence & agent trace").closest("details");
+    expect(trace?.open).toBe(false);
+    expect(
+      screen.queryByText("No further operator action required"),
+    ).toBeNull();
+  });
+
+  it("shows real streamed TrueForge work as active instead of waiting", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...incidentSnapshot(),
+      activity: [
+        {
+          detail: "Sanitized durable TrueForge stream milestone.",
+          evidence: null,
+          id: "event-review-started",
+          kind: "subagent",
+          occurredAt: "2026-08-29T21:00:00.000Z",
+          source: "TRUEFORGE",
+          status: "ACTIVE",
+          title: "Evidence provenance review started",
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const task = (await screen.findByText("Evidence Provenance Verifier")).closest(
+      ".agent-task",
+    );
+    expect(task?.getAttribute("data-state")).toBe("active");
+    expect(task?.textContent).toContain("Live");
+  });
+
+  it("advances Baseline progress only from durable activity", async () => {
+    const snapshot = baselineRunningSnapshot([
+      {
+        detail: "Observed in the durable TrueForge event sequence.",
+        evidence: null,
+        id: "tool-read-document",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:00.000Z",
+        source: "TRUEFORGE",
+        status: "COMPLETED",
+        title: "read_internal_document",
+      },
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Following the Canary" }),
+    ).not.toBeNull();
+    expect(screen.getByText("Canary document").closest("article")?.dataset.state).toBe(
+      "active",
+    );
+  });
+
+  it("explains an empty evidence drawer instead of opening a blank panel", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(baselineRunningSnapshot([]))),
+    );
+
+    render(<App />);
+    const drawer = (await screen.findByText("Evidence & agent trace")).closest(
+      "details",
+    );
+    if (!(drawer instanceof HTMLElement)) throw new Error("Evidence drawer missing");
+    fireEvent.click(within(drawer).getByText("Evidence & agent trace"));
+    expect(
+      within(drawer).getByText("Waiting for the first durable record"),
+    ).not.toBeNull();
+  });
+
+  it("withholds contradictory VERIFIED state when containment evidence is absent", async () => {
+    const verified = verifiedSnapshot();
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...verified,
+      comparison: { ...verified.comparison, containment: null },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    expect(
+      await screen.findAllByRole("heading", { name: "Verified evidence is unavailable" }),
+    ).toHaveLength(2);
+    expect(
+      screen.queryByRole("heading", { name: "Attack blocked. Support still works." }),
+    ).toBeNull();
+    const journey = screen.getByRole("navigation", { name: "Incident journey" });
+    expect(within(journey).getByText("Verify").closest("li")?.dataset.state).toBe(
+      "skipped",
+    );
+  });
+
+  it("does not mark breach proof complete when the Baseline is inconclusive", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...incidentSnapshot(),
+      baseline: {
+        bundleHash: BUNDLE_HASH,
+        complete: true,
+        evidenceUrl: "/api/runs/run-1/evidence",
+        runId: "run-1",
+        verdict: "INCONCLUSIVE",
+      },
+      comparison: null,
+      phase: "RESULT",
+      status: "BASELINE_INCONCLUSIVE",
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const journey = await screen.findByRole("navigation", {
+      name: "Incident journey",
+    });
+    expect(within(journey).getByText("Prove breach").closest("li")?.dataset.state).toBe(
+      "skipped",
+    );
+  });
+
+  it("keeps the active mobile journey step in view", async () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        addEventListener: vi.fn(),
+        addListener: vi.fn(),
+        dispatchEvent: vi.fn(() => true),
+        matches: true,
+        media: "(max-width: 680px)",
+        onchange: null,
+        removeEventListener: vi.fn(),
+        removeListener: vi.fn(),
+      })),
+    );
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(verifiedSnapshot())));
+
+    render(<App />);
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+
+    if (original === undefined) {
+      Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+    } else {
+      Object.defineProperty(HTMLElement.prototype, "scrollTo", original);
+    }
   });
 });
 
@@ -198,6 +392,10 @@ function readySnapshot(): MissionControlSnapshot {
     comparison: null,
     decisionPending: false,
     failure: null,
+    integrations: {
+      trueForgeSessionId: null,
+      trueForgeUrl: "http://127.0.0.1:8790",
+    },
     incident: null,
     phase: "READY",
     status: "READY",
@@ -269,6 +467,59 @@ function awaitingApprovalSnapshot(): MissionControlSnapshot {
   });
 }
 
+function verifiedSnapshot(): MissionControlSnapshot {
+  return missionControlSnapshotSchema.parse({
+    ...incidentSnapshot(),
+    comparison: {
+      baseline: {
+        bundleHash: BUNDLE_HASH,
+        complete: true,
+        evidenceUrl: "/api/runs/run-1/evidence",
+        exactCanaryReceipts: 1,
+        result: "VULNERABLE",
+        runId: "run-1",
+      },
+      containment: {
+        claim: "VERIFIED_REMEDIATION",
+        evidence: [
+          { bundleHash: BUNDLE_HASH, url: "/api/runs/run-1/evidence" },
+          { bundleHash: CANDIDATE_HASH, url: "/api/runs/replay-1/evidence" },
+          { bundleHash: BASE_HASH, url: "/api/runs/control-1/evidence" },
+        ],
+      },
+      control: {
+        bundleHash: BASE_HASH,
+        complete: true,
+        evidenceUrl: "/api/runs/control-1/evidence",
+        result: "PASSED",
+        runId: "control-1",
+        trustedDestinationReceipts: 1,
+      },
+      replay: {
+        bundleHash: CANDIDATE_HASH,
+        complete: true,
+        evidenceUrl: "/api/runs/replay-1/evidence",
+        explicitPolicyDenial: true,
+        matchingCanaryReceipts: 0,
+        result: "PROTECTED",
+        runId: "replay-1",
+      },
+    },
+    incident: { id: "incident-1", status: "RESOLVED" },
+    phase: "RESULT",
+    status: "VERIFIED",
+    verification: {
+      control: { result: "PASSED", runId: "control-1", state: "COMPLETED" },
+      policyReadback: { hash: CANDIDATE_HASH, state: "MATCHED", version: 2 },
+      replay: {
+        result: "PROTECTED",
+        runId: "replay-1",
+        state: "COMPLETED",
+      },
+    },
+  });
+}
+
 function failedVerificationSnapshot(): MissionControlSnapshot {
   return missionControlSnapshotSchema.parse({
     ...incidentSnapshot(),
@@ -316,9 +567,34 @@ function incidentSnapshot(): MissionControlSnapshot {
     },
     decisionPending: false,
     failure: null,
+    integrations: {
+      trueForgeSessionId: PENDING_DECISION.sessionId,
+      trueForgeUrl: "http://127.0.0.1:8790",
+    },
     incident: { id: "incident-1", status: "OPEN" },
     phase: "INVESTIGATION",
     status: "INVESTIGATING",
+    verification: null,
+  });
+}
+
+function baselineRunningSnapshot(
+  activityItems: MissionControlSnapshot["activity"],
+): MissionControlSnapshot {
+  return missionControlSnapshotSchema.parse({
+    activity: activityItems,
+    approval: null,
+    baseline: null,
+    comparison: null,
+    decisionPending: false,
+    failure: null,
+    incident: { id: "incident-1", status: "OPEN" },
+    integrations: {
+      trueForgeSessionId: null,
+      trueForgeUrl: "http://127.0.0.1:8790",
+    },
+    phase: "BASELINE",
+    status: "BASELINE_RUNNING",
     verification: null,
   });
 }

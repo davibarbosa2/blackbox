@@ -316,13 +316,35 @@ function remediationActivity(
       "analysis" in remediation && remediation.analysis !== undefined,
     ),
   );
+  const decision = "decision" in remediation ? remediation.decision : undefined;
+  const decisionActivity: MissionControlActivity[] =
+    decision === undefined
+      ? []
+      : [
+          {
+            detail:
+              decision.decision === "allow"
+                ? "The exact pending TrueForge Policy Patch action was approved by a human."
+                : "The exact pending TrueForge Policy Patch action was declined by a human.",
+            evidence: null,
+            id: `${decision.callId}:human-decision:${decision.decision}`,
+            kind: "phase",
+            occurredAt: decision.decidedAt,
+            source: "BLACKBOX",
+            status: "COMPLETED",
+            title:
+              decision.decision === "allow"
+                ? "Policy Patch approved by human"
+                : "Policy Patch declined by human",
+          },
+        ];
   if (
     !("analysis" in remediation) ||
     !("subagents" in remediation) ||
     remediation.analysis === undefined ||
     remediation.subagents === undefined
   ) {
-    return streamed;
+    return [...streamed, ...decisionActivity];
   }
   const subagents = remediation.subagents.map((subagent) => ({
     detail: "Focused review completion is retained in durable Incident state.",
@@ -352,7 +374,7 @@ function remediationActivity(
   ];
   return [
     ...new Map(
-      [...streamed, ...finalized].map((activity) => [activity.id, activity]),
+      [...streamed, ...finalized, ...decisionActivity].map((activity) => [activity.id, activity]),
     ).values(),
   ];
 }

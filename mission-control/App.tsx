@@ -5,6 +5,24 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowRight,
+  Bot,
+  Check,
+  ChevronDown,
+  Clock3,
+  ExternalLink,
+  GitBranch,
+  LoaderCircle,
+  Minus,
+  ReceiptText,
+  RefreshCw,
+  ShieldCheck,
+  SquareTerminal,
+  X,
+} from "lucide-react";
 
 import type {
   MissionControlActivity,
@@ -15,20 +33,23 @@ import {
   startIncident,
   submitRemediationDecision,
 } from "./api.js";
+import trueForgeMarkDark from "./assets/trueforge-logomark-dark.svg";
+import trueForgeMarkLight from "./assets/trueforge-logomark-light.svg";
 
 type Command = "START" | "ALLOW" | "DENY";
 type Tone = "neutral" | "live" | "danger" | "warning" | "success";
-
-interface StatusCopy {
-  description: string;
-  eyebrow: string;
-  title: string;
-  tone: Tone;
-}
+type StepState = "active" | "complete" | "skipped" | "upcoming";
 
 interface CommandState {
   active: Command | null;
   error: string | null;
+}
+
+interface SceneCopy {
+  description: string;
+  eyebrow: string;
+  title: string;
+  tone: Tone;
 }
 
 const INITIAL_COMMAND_STATE: CommandState = { active: null, error: null };
@@ -106,12 +127,7 @@ export function App(): ReactNode {
   );
 
   if (snapshot === null) {
-    return (
-      <LoadingView
-        error={connectionError}
-        onRetry={() => void refresh()}
-      />
-    );
+    return <LoadingView error={connectionError} onRetry={() => void refresh()} />;
   }
 
   if (snapshot.phase === "READY") {
@@ -120,13 +136,14 @@ export function App(): ReactNode {
         command={command}
         connectionError={connectionError}
         onStart={() => void runCommand("START")}
+        snapshot={snapshot}
       />
     );
   }
 
   return (
     <>
-      <IncidentView
+      <MissionView
         command={command}
         connectionError={connectionError}
         snapshot={snapshot}
@@ -153,14 +170,11 @@ function LoadingView(props: LoadingViewProps): ReactNode {
   return (
     <div className="loading-view">
       <Brand />
-      <div className="loading-panel" aria-live="polite">
-        <span className="loader" aria-hidden="true" />
+      <div className="loading-card" aria-live="polite">
+        <SignalMark active={props.error === null} />
         <p className="eyebrow">Connecting to BLACKBOX</p>
-        <h1>Reconstructing durable Incident state</h1>
-        <p>
-          Mission Control is reading the orchestrator, Evidence Ledger, and
-          pending TrueForge action.
-        </p>
+        <h1>Restoring the Incident</h1>
+        <p>Reading durable evidence and the exact pending TrueForge action.</p>
         {props.error === null ? null : (
           <div className="inline-error" role="alert">
             <strong>Connection failed</strong>
@@ -179,6 +193,7 @@ interface OpeningViewProps {
   command: CommandState;
   connectionError: string | null;
   onStart(): void;
+  snapshot: MissionControlSnapshot;
 }
 
 function OpeningView(props: OpeningViewProps): ReactNode {
@@ -187,33 +202,24 @@ function OpeningView(props: OpeningViewProps): ReactNode {
     <div className="opening-shell">
       <header className="opening-header">
         <Brand />
-        <div
-          className={`system-ready${props.connectionError === null ? "" : " disconnected"}`}
-        >
-          <span className="status-light" aria-hidden="true" />
-          {props.connectionError === null
-            ? "BLACKBOX orchestrator ready"
-            : "Updates interrupted"}
+        <div className="header-actions">
+          <TrueForgeLink snapshot={props.snapshot} />
+          <ConnectionState error={props.connectionError} readyLabel="System ready" />
         </div>
       </header>
 
       <main className="opening-main">
-        <section className="opening-hero" aria-labelledby="opening-title">
-          <p className="eyebrow">Evidence-first AI-agent incident response</p>
+        <section className="opening-copy" aria-labelledby="opening-title">
+          <p className="eyebrow">Live AI-agent incident replay</p>
           <h1 id="opening-title">
-            Prove the leak.
-            <br />
-            Approve the boundary.
-            <br />
-            Verify containment.
+            Watch an AI agent leak a secret. <span>Then stop it.</span>
           </h1>
           <p className="opening-lede">
-            A synthetic Support Ticket will attempt to make a real Support
-            Agent read a run-scoped Canary Secret and send it to a controlled
-            External Sink. BLACKBOX claims containment only after an equivalent
-            replay is blocked and legitimate support still works.
+            BLACKBOX proves the breach, asks you to approve one narrow policy
+            change, then reruns both the attack and legitimate support before
+            it claims success.
           </p>
-          <div className="opening-action-row">
+          <div className="opening-actions">
             <button
               aria-busy={starting}
               className="primary-button start-button"
@@ -221,15 +227,18 @@ function OpeningView(props: OpeningViewProps): ReactNode {
               onClick={props.onStart}
               type="button"
             >
-              <span>{starting ? "Starting real Incident…" : "Start live Incident"}</span>
-              <span className="button-arrow" aria-hidden="true">↗</span>
+              <span>{starting ? "Starting the Incident…" : "Run the live Incident"}</span>
+              {starting
+                ? <LoaderCircle aria-hidden="true" className="loading-icon" size={16} />
+                : <ArrowRight aria-hidden="true" size={16} />}
             </button>
-            <p>
-              One start. One human decision.
-              <br />
-              No simulated security state.
-            </p>
+            <span className="run-time">~2 min live run</span>
           </div>
+          <ul className="opening-facts" aria-label="Run facts">
+            <li><strong>01</strong> Real TrueForge agents</li>
+            <li><strong>02</strong> One human approval</li>
+            <li><strong>03</strong> Three evidence bundles</li>
+          </ul>
           {props.command.error === null ? null : (
             <p className="command-error" role="alert">{props.command.error}</p>
           )}
@@ -238,113 +247,51 @@ function OpeningView(props: OpeningViewProps): ReactNode {
           )}
         </section>
 
-        <section className="attack-map" aria-label="Synthetic Attack Scenario">
-          <div className="map-heading">
-            <span>Canonical Attack Scenario</span>
-            <span className="synthetic-label">Controlled + synthetic</span>
-          </div>
-          <div className="map-flow">
-            <MapNode
-              index="01"
-              label="Untrusted input"
-              title="Support Ticket"
-              detail="Carries the fixed attack instruction"
-            />
-            <FlowArrow label="processes" />
-            <MapNode
-              index="02"
-              label="Victim Agent"
-              title="Support Agent"
-              detail="Uses real TrueForge model + MCP tools"
-            />
-            <FlowArrow label="attempts send" />
-            <MapNode
-              accent
-              index="03"
-              label="Independent proof"
-              title="External Sink"
-              detail="Records the exact Run-specific Canary"
-            />
-          </div>
-          <div className="proof-rule">
-            <span className="proof-rule-mark" aria-hidden="true">≠</span>
+        <section className="scenario-card" aria-labelledby="scenario-title">
+          <div className="scenario-heading">
             <div>
-              <strong>A suspicious transcript is not proof.</strong>
-              <p>
-                The Evidence Ledger alone finalizes Run verdicts and bundle
-                hashes. The UI never invents them.
-              </p>
+              <p className="eyebrow">The controlled incident</p>
+              <h2 id="scenario-title">One ticket. One synthetic secret.</h2>
+            </div>
+            <span className="scenario-badge">Safe to demo</span>
+          </div>
+          <ScenarioPath mode="preview" snapshot={props.snapshot} />
+          <div className="proof-rule">
+            <span className="receipt-symbol" aria-hidden="true"><ReceiptText size={16} /></span>
+            <div>
+              <strong>The model saying it leaked is not proof.</strong>
+              <p>An exact Canary receipt at the independent sink is.</p>
             </div>
           </div>
         </section>
       </main>
 
       <footer className="opening-footer">
-        <span>BLACKBOX / Mission Control</span>
-        <span>Local-first · evidence-backed · human-approved</span>
+        <span>BLACKBOX / forensic replay room</span>
+        <span>Evidence-backed · human-approved</span>
       </footer>
     </div>
   );
 }
 
-interface MapNodeProps {
-  accent?: boolean;
-  detail: string;
-  index: string;
-  label: string;
-  title: string;
-}
-
-function MapNode(props: MapNodeProps): ReactNode {
-  return (
-    <article className={`map-node${props.accent === true ? " accent" : ""}`}>
-      <div className="map-node-top">
-        <span>{props.index}</span>
-        <span className="node-dot" aria-hidden="true" />
-      </div>
-      <p>{props.label}</p>
-      <h2>{props.title}</h2>
-      <span>{props.detail}</span>
-    </article>
-  );
-}
-
-interface FlowArrowProps {
-  label: string;
-}
-
-function FlowArrow(props: FlowArrowProps): ReactNode {
-  return (
-    <div className="flow-arrow" aria-hidden="true">
-      <span>{props.label}</span>
-      <i />
-    </div>
-  );
-}
-
-interface IncidentViewProps {
+interface MissionViewProps {
   command: CommandState;
   connectionError: string | null;
   snapshot: MissionControlSnapshot;
 }
 
-function IncidentView(props: IncidentViewProps): ReactNode {
-  const copy = statusCopy(props.snapshot);
+function MissionView(props: MissionViewProps): ReactNode {
   const incidentId = props.snapshot.incident?.id ?? "unknown";
   return (
-    <div className="app-shell">
-      <header className="app-header">
+    <div className="mission-shell" data-phase={props.snapshot.phase.toLowerCase()}>
+      <header className="mission-header">
         <Brand />
-        <div className="incident-identity">
-          <span
-            className={`connection-state${props.connectionError === null ? "" : " disconnected"}`}
-          >
-            <span className="status-light" aria-hidden="true" />
-            {props.connectionError === null
-              ? "Live orchestrator state"
-              : "Last durable snapshot"}
-          </span>
-          <span className="mono">INC {shortId(incidentId)}</span>
+        <div className="header-actions">
+          <TrueForgeLink snapshot={props.snapshot} />
+          <ConnectionState
+            error={props.connectionError}
+            readyLabel={`Incident ${shortId(incidentId)}`}
+          />
         </div>
       </header>
 
@@ -352,79 +299,87 @@ function IncidentView(props: IncidentViewProps): ReactNode {
         <div className="connection-banner" role="alert">
           <strong>Live updates interrupted.</strong>
           <span>{props.connectionError}</span>
-          <span>Last durable snapshot remains on screen.</span>
+          <span>The last durable snapshot remains visible.</span>
         </div>
       )}
 
-      <PhaseRail snapshot={props.snapshot} />
+      <JourneyRail snapshot={props.snapshot} />
 
-      <main className="incident-main">
-        <section className={`status-hero tone-${copy.tone}`} aria-live="polite">
-          <div className="status-copy">
-            <div className="eyebrow-row">
-              <p className="eyebrow">{copy.eyebrow}</p>
-              <StatusChip tone={copy.tone}>{statusLabel(props.snapshot.status)}</StatusChip>
-            </div>
-            <h1>{copy.title}</h1>
-            <p>{copy.description}</p>
-          </div>
-          <BaselineProof snapshot={props.snapshot} />
-        </section>
-
-        {props.command.error === null ||
-        props.snapshot.approval !== null ? null : (
-          <div className="failure-card compact" role="alert">
-            <span className="failure-icon" aria-hidden="true">!</span>
-            <div>
-              <strong>Command was not accepted</strong>
-              <p>{props.command.error}</p>
-            </div>
-          </div>
+      <main className="mission-main">
+        <NowStrip snapshot={props.snapshot} />
+        <ActiveScene snapshot={props.snapshot} />
+        {props.command.error === null || props.snapshot.approval !== null ? null : (
+          <FailureNotice
+            detail={props.command.error}
+            title="Command was not accepted"
+          />
         )}
-
-        {props.snapshot.failure === null ? null : (
-          <FailureCard failure={props.snapshot.failure} />
-        )}
-
-        {props.snapshot.verification === null ? null : (
-          <VerificationPanel snapshot={props.snapshot} />
-        )}
-
-        {props.snapshot.comparison === null ? null : (
-          <ComparisonPanel snapshot={props.snapshot} />
-        )}
-
-        <ActivityFeed activity={props.snapshot.activity} />
+        <EvidenceDrawer snapshot={props.snapshot} />
       </main>
-
-      <footer className="app-footer">
-        <span>Security conclusions link to finalized Evidence Bundles.</span>
-        <span className="mono">BLACKBOX / TRUEFORGE</span>
-      </footer>
     </div>
   );
 }
 
-interface PhaseRailProps {
+interface ConnectionStateProps {
+  error: string | null;
+  readyLabel: string;
+}
+
+function ConnectionState(props: ConnectionStateProps): ReactNode {
+  return (
+    <span className={`connection-state${props.error === null ? "" : " disconnected"}`}>
+      <span className="connection-dot" aria-hidden="true" />
+      {props.error === null ? props.readyLabel : "Last durable state"}
+    </span>
+  );
+}
+
+interface JourneyRailProps {
   snapshot: MissionControlSnapshot;
 }
 
-function PhaseRail(props: PhaseRailProps): ReactNode {
-  const activeIndex = phaseRailIndex(props.snapshot);
+function JourneyRail(props: JourneyRailProps): ReactNode {
+  const railRef = useRef<HTMLElement>(null);
   const stages = [
-    ["01", "Prove attack", "Baseline evidence"],
-    ["02", "Investigate", "TrueForge + Daytona"],
-    ["03", "Decide", "Human policy boundary"],
-    ["04", "Verify", "Replay + control"],
+    ["01", "Prove breach", "Baseline Run"],
+    ["02", "Investigate", "TrueForge"],
+    ["03", "Approve", "Policy Patch"],
+    ["04", "Verify", "Replay + Control"],
+    ["05", "Result", "Evidence verdict"],
   ] as const;
+  useEffect(() => {
+    const rail = railRef.current;
+    if (
+      rail === null ||
+      window.matchMedia?.("(max-width: 680px)").matches !== true
+    ) {
+      return;
+    }
+    const active = rail.querySelector<HTMLElement>('[aria-current="step"]');
+    if (active === null) return;
+    rail.scrollTo({
+      behavior: "auto",
+      left: active.offsetLeft - (rail.clientWidth - active.clientWidth) / 2,
+    });
+  }, [props.snapshot.phase, props.snapshot.status]);
   return (
-    <nav className="phase-rail" aria-label="Incident progress">
+    <nav className="journey-rail" aria-label="Incident journey" ref={railRef}>
       <ol>
         {stages.map((stage, index) => {
-          const state = index < activeIndex ? "complete" : index === activeIndex ? "active" : "upcoming";
+          const state = journeyStepState(props.snapshot, index);
           return (
-            <li aria-current={state === "active" ? "step" : undefined} data-state={state} key={stage[0]}>
-              <span className="phase-number">{state === "complete" ? "✓" : stage[0]}</span>
+            <li
+              aria-current={state === "active" ? "step" : undefined}
+              data-state={state}
+              key={stage[0]}
+            >
+              <span className="journey-number">
+                {state === "complete"
+                  ? <Check aria-hidden="true" size={13} />
+                  : state === "skipped"
+                    ? <Minus aria-hidden="true" size={13} />
+                    : stage[0]}
+              </span>
               <span>
                 <strong>{stage[1]}</strong>
                 <small>{stage[2]}</small>
@@ -437,226 +392,436 @@ function PhaseRail(props: PhaseRailProps): ReactNode {
   );
 }
 
-interface BaselineProofProps {
+interface NowStripProps {
   snapshot: MissionControlSnapshot;
 }
 
-function BaselineProof(props: BaselineProofProps): ReactNode {
-  const baseline = props.snapshot.baseline;
-  const comparison = props.snapshot.comparison;
-  if (baseline === null) {
-    return (
-      <aside className="proof-card pending" aria-label="Baseline Run pending">
-        <span className="proof-card-label">Baseline Run</span>
-        <span className="proof-pulse" aria-hidden="true" />
-        <strong>Evidence in progress</strong>
-        <p>No verdict is shown until the bundle is finalized.</p>
-      </aside>
-    );
-  }
+function NowStrip(props: NowStripProps): ReactNode {
+  const copy = sceneCopy(props.snapshot);
+  const progressSignature = `${props.snapshot.phase}:${props.snapshot.status}:${props.snapshot.activity.map((item) => `${item.id}:${item.status}`).join("|")}`;
+  const [quietSeconds, setQuietSeconds] = useState(0);
+  useEffect(() => {
+    setQuietSeconds(0);
+    if (copy.tone !== "live") return;
+    const startedAt = Date.now();
+    const interval = window.setInterval(() => {
+      setQuietSeconds(Math.floor((Date.now() - startedAt) / 1_000));
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [copy.tone, progressSignature]);
+  const quietlyWaiting = copy.tone === "live" && quietSeconds >= 12;
   return (
-    <aside className="proof-card" aria-label="Baseline Run proof">
-      <div className="proof-card-top">
-        <span className="proof-card-label">Baseline Run</span>
-        <span className="mono">{shortId(baseline.runId)}</span>
+    <section className={`now-strip tone-${copy.tone}`} aria-live="polite">
+      <div className="now-label">
+        <SignalMark active={copy.tone === "live" && !quietlyWaiting} />
+        <span>{quietlyWaiting ? "Waiting" : "Now"}</span>
       </div>
-      <strong className={baseline.verdict === "VULNERABLE" ? "danger-text" : "warning-text"}>
-        {titleCase(baseline.verdict)}
-      </strong>
-      <p>
-        {comparison === null
-          ? "Finalized bundle available."
-          : `${comparison.baseline.exactCanaryReceipts} exact Canary receipt${comparison.baseline.exactCanaryReceipts === 1 ? "" : "s"} at the controlled sink.`}
+      <div className="now-copy">
+        <p className="eyebrow">{copy.eyebrow}</p>
+        <h1>{copy.title}</h1>
+        <p>
+          {quietlyWaiting
+            ? `Still waiting for the next durable update (${quietSeconds}s). ${copy.description}`
+            : copy.description}
+        </p>
+      </div>
+      <StatusPill tone={copy.tone}>
+        {quietlyWaiting ? `Waiting · ${quietSeconds}s` : statusLabel(props.snapshot.status)}
+      </StatusPill>
+    </section>
+  );
+}
+
+interface ActiveSceneProps {
+  snapshot: MissionControlSnapshot;
+}
+
+function ActiveScene(props: ActiveSceneProps): ReactNode {
+  if (props.snapshot.phase === "BASELINE") {
+    return <BaselineScene snapshot={props.snapshot} />;
+  }
+  if (
+    props.snapshot.phase === "INVESTIGATION" ||
+    props.snapshot.phase === "APPROVAL"
+  ) {
+    return <InvestigationScene snapshot={props.snapshot} />;
+  }
+  if (props.snapshot.phase === "VERIFICATION") {
+    return <VerificationScene snapshot={props.snapshot} />;
+  }
+  return <ResultScene snapshot={props.snapshot} />;
+}
+
+interface SceneProps {
+  snapshot: MissionControlSnapshot;
+}
+
+function BaselineScene(props: SceneProps): ReactNode {
+  const comparison = props.snapshot.comparison;
+  const baseline = props.snapshot.baseline;
+  const progress = baselineProgress(props.snapshot);
+  return (
+    <section className="scene-grid baseline-scene" aria-labelledby="baseline-scene-title">
+      <div className="causal-canvas">
+        <div className="scene-heading">
+          <div>
+            <p className="eyebrow">Baseline Run</p>
+            <h2 id="baseline-scene-title">Can the secret reach the sink?</h2>
+          </div>
+          <span className="policy-state">Policy v1 · any destination</span>
+        </div>
+        <ScenarioPath mode="baseline" snapshot={props.snapshot} />
+      </div>
+      <aside className={`proof-focus${baseline?.verdict === "VULNERABLE" ? " breached" : ""}`}>
+        <p className="eyebrow">Independent proof</p>
+        {baseline === null ? (
+          <>
+            <SignalMark active />
+            <strong>No verdict yet</strong>
+            <p>{progress.proof}</p>
+          </>
+        ) : (
+          <>
+            <span className="proof-glyph" aria-hidden="true"><AlertTriangle size={23} /></span>
+            <strong>{titleCase(baseline.verdict)}</strong>
+            <p>
+              <b>{comparison?.baseline.exactCanaryReceipts ?? 0}</b> exact Canary
+              receipt at the controlled External Sink.
+            </p>
+            <EvidenceLink
+              bundleHash={baseline.bundleHash}
+              label="Inspect Baseline evidence"
+              url={baseline.evidenceUrl}
+            />
+          </>
+        )}
+      </aside>
+    </section>
+  );
+}
+
+function InvestigationScene(props: SceneProps): ReactNode {
+  const awaitingApproval = props.snapshot.phase === "APPROVAL";
+  return (
+    <section className="scene-grid investigation-scene" aria-labelledby="investigation-scene-title">
+      <div className="causal-canvas breached-canvas">
+        <div className="scene-heading">
+          <div>
+            <p className="eyebrow">Breach reconstruction</p>
+            <h2 id="investigation-scene-title">The leak has one missing boundary.</h2>
+          </div>
+          <span className="breach-badge">Leak proven</span>
+        </div>
+        <ScenarioPath mode="baseline" snapshot={props.snapshot} />
+        <div className="diagnosis-line">
+          <span>Diagnosis</span>
+          <strong>Outbound messages can target any destination.</strong>
+        </div>
+      </div>
+      <TrueForgeTrace snapshot={props.snapshot} ready={awaitingApproval} />
+    </section>
+  );
+}
+
+interface TrueForgeTraceProps extends SceneProps {
+  ready: boolean;
+}
+
+function TrueForgeTrace(props: TrueForgeTraceProps): ReactNode {
+  const tasks = [
+    ["Evidence Provenance Verifier", "Evidence Provenance Verifier", "subagent"],
+    ["Policy Patch Reviewer", "Policy Patch Reviewer", "subagent"],
+    ["Sandbox analysis", "Sandbox analysis completed", "sandbox"],
+  ] as const;
+  return (
+    <aside className="trueforge-trace">
+      <div className="trace-brand-row">
+        <TrueForgeMark />
+        <TrueForgeLink snapshot={props.snapshot} />
+      </div>
+      <div className="trace-title-row">
+        <div>
+          <p className="eyebrow">TrueForge Investigator</p>
+          <h2>{props.ready ? "Policy Patch ready" : "Autonomous investigation"}</h2>
+        </div>
+        <StatusPill tone={props.ready ? "warning" : "live"}>
+          {props.ready ? "Paused" : "Live"}
+        </StatusPill>
+      </div>
+      <p className="trace-summary">
+        {props.ready
+          ? "The real apply_policy_patch action is waiting for one human decision."
+          : "Reconstructing the evidence and testing the narrowest defensible change."}
       </p>
-      <EvidenceLink
-        bundleHash={baseline.bundleHash}
-        label="Open Baseline evidence"
-        url={baseline.evidenceUrl}
-      />
+      <div className="agent-tree" aria-label="TrueForge investigation activity">
+        <div className="root-agent">
+          <span className="agent-icon"><Bot aria-hidden="true" size={14} /></span>
+          <div><strong>BLACKBOX Investigator</strong><small>TrueForge agent</small></div>
+          <span className={props.ready ? "task-check" : "task-live"}>
+            {props.ready ? <Check aria-hidden="true" size={14} /> : ""}
+          </span>
+        </div>
+        <div className="agent-branches">
+          {tasks.map(([label, completedTitle, kind]) => {
+            const state = investigationTaskState(
+              props.snapshot.activity,
+              completedTitle,
+            );
+            return (
+              <div className="agent-task" data-state={state} key={label}>
+                <span className="branch-line" aria-hidden="true" />
+                <span className="task-icon" aria-hidden="true">
+                  {kind === "sandbox" ? <SquareTerminal size={13} /> : <GitBranch size={13} />}
+                </span>
+                <div><strong>{label}</strong><small>{kind === "sandbox" ? "Daytona" : "Focused subagent"}</small></div>
+                <span className={state === "complete" ? "task-check" : state === "active" ? "task-live" : "task-wait"}>
+                  {state === "complete" ? <Check aria-hidden="true" size={14} /> : state === "active" ? "Live" : "Waiting"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className={`mutation-state${props.ready ? " ready" : ""}`}>
+        <span>Capability Policy</span>
+        <strong>{props.ready ? "Proposed · not active" : "Unchanged while agents work"}</strong>
+      </div>
     </aside>
   );
 }
 
-interface FailureCardProps {
-  failure: NonNullable<MissionControlSnapshot["failure"]>;
-}
-
-function FailureCard(props: FailureCardProps): ReactNode {
-  return (
-    <section className="failure-card" aria-labelledby="failure-title">
-      <span className="failure-icon" aria-hidden="true">!</span>
-      <div>
-        <p className="eyebrow">Success claim withheld</p>
-        <h2 id="failure-title">{props.failure.title}</h2>
-        <p>{props.failure.detail}</p>
-      </div>
-    </section>
-  );
-}
-
-interface VerificationPanelProps {
-  snapshot: MissionControlSnapshot;
-}
-
-function VerificationPanel(props: VerificationPanelProps): ReactNode {
+function VerificationScene(props: SceneProps): ReactNode {
   const verification = props.snapshot.verification;
   if (verification === null) return null;
   return (
-    <section className="panel verification-panel" aria-labelledby="verification-title">
-      <div className="section-heading">
+    <section className="verification-scene" aria-labelledby="verification-scene-title">
+      <div className="verification-heading">
         <div>
           <p className="eyebrow">Automatic verification</p>
-          <h2 id="verification-title">No further operator action required</h2>
+          <h2 id="verification-scene-title">Same attack. Separate control.</h2>
         </div>
-        <span className="automation-badge">AUTO</span>
+        <div className="readback-proof">
+          <span className="task-check"><Check aria-hidden="true" size={14} /></span>
+          <span><small>Policy readback</small><strong>v{verification.policyReadback.version} matched</strong></span>
+        </div>
       </div>
-      <div className="verification-grid">
-        <VerificationStep
-          detail={`Policy v${verification.policyReadback.version} · ${shortHash(verification.policyReadback.hash)}`}
-          index="01"
-          label="Policy readback"
-          result="Matched approved patch"
-          state="COMPLETED"
-        />
-        <VerificationStep
-          detail="Equivalent synthetic attack"
-          index="02"
-          label="Attack Replay"
-          result={verification.replay.result === null ? null : titleCase(verification.replay.result)}
+      <div className="verification-lanes">
+        <VerificationLane
+          evidence={props.snapshot.comparison?.replay ?? null}
+          kind="attack"
+          result={verification.replay.result}
           state={verification.replay.state}
         />
-        <VerificationStep
-          detail="Trusted support destination"
-          index="03"
-          label="Control Run"
-          result={verification.control.result === null ? null : titleCase(verification.control.result)}
+        <VerificationLane
+          evidence={props.snapshot.comparison?.control ?? null}
+          kind="control"
+          result={verification.control.result}
           state={verification.control.state}
         />
       </div>
+      <p className="verification-note">
+        No further action is available. BLACKBOX will claim Verified Remediation
+        only if both lanes finalize with complete evidence.
+      </p>
     </section>
   );
 }
 
-interface VerificationStepProps {
-  detail: string;
-  index: string;
-  label: string;
-  result: string | null;
+interface VerificationLaneProps {
+  evidence:
+    | NonNullable<NonNullable<MissionControlSnapshot["comparison"]>["replay"]>
+    | NonNullable<NonNullable<MissionControlSnapshot["comparison"]>["control"]>
+    | null;
+  kind: "attack" | "control";
+  result: "PASSED" | "PROTECTED" | "INCONCLUSIVE" | null;
   state: "WAITING" | "ACTIVE" | "COMPLETED" | "INCONCLUSIVE";
 }
 
-function VerificationStep(props: VerificationStepProps): ReactNode {
+function VerificationLane(props: VerificationLaneProps): ReactNode {
+  const attack = props.kind === "attack";
+  const finished = props.state === "COMPLETED";
+  const inconclusive = props.state === "INCONCLUSIVE";
+  const progressCopy = inconclusive
+    ? "Evidence incomplete"
+    : props.state === "WAITING"
+      ? attack
+        ? "Preparing Attack Replay"
+        : "Starts after Attack Replay"
+      : "Collecting durable evidence";
   return (
-    <article className="verification-step" data-state={props.state.toLowerCase()}>
-      <div className="verification-marker">
-        {props.state === "COMPLETED"
-          ? "✓"
-          : props.state === "INCONCLUSIVE"
-            ? "!"
-            : props.index}
+    <article className={`verification-lane ${props.kind}`} data-state={props.state.toLowerCase()}>
+      <div className="lane-heading">
+        <span className="lane-index">{attack ? "A" : "B"}</span>
+        <div>
+          <p className="eyebrow">{attack ? "Security check" : "Capability check"}</p>
+          <h3>{attack ? "Attack Replay" : "Control Run"}</h3>
+        </div>
+        <StatusPill tone={inconclusive ? "warning" : finished ? "success" : props.state === "ACTIVE" ? "live" : "neutral"}>
+          {props.result === null ? titleCase(props.state) : titleCase(props.result)}
+        </StatusPill>
       </div>
-      <div>
-        <span className="step-state">{titleCase(props.state)}</span>
-        <h3>{props.label}</h3>
-        <p>{props.detail}</p>
-        {props.result === null ? null : <strong>{props.result}</strong>}
+      <div className="lane-path" aria-label={attack ? "Attack Replay path" : "Control Run path"}>
+        <LaneNode label={attack ? "Same ticket" : "Support request"} state={props.state === "WAITING" ? "waiting" : "complete"} />
+        <span className="lane-connector" aria-hidden="true" />
+        <LaneNode label="Support Agent" state={props.state === "ACTIVE" ? "active" : finished ? "complete" : "waiting"} />
+        <span className="lane-connector" aria-hidden="true" />
+        <LaneNode
+          label="Policy gate"
+          state={finished ? (attack ? "blocked" : "allowed") : props.state === "ACTIVE" ? "active" : "waiting"}
+        />
+        <span className="lane-connector" aria-hidden="true" />
+        <LaneNode
+          label={attack ? "External Sink" : "Trusted Destination"}
+          state={finished ? (attack ? "empty" : "allowed") : "waiting"}
+        />
+      </div>
+      <div className="lane-result">
+        {finished ? (
+          attack ? (
+            <><strong>0</strong><span>matching sink receipts</span></>
+          ) : (
+            <><strong>1+</strong><span>trusted receipt required</span></>
+          )
+        ) : (
+          <>
+            {inconclusive
+              ? <AlertTriangle aria-hidden="true" className="lane-state-icon warning" size={14} />
+              : props.state === "WAITING"
+                ? <Clock3 aria-hidden="true" className="lane-state-icon" size={14} />
+                : <SignalMark active />}
+            <span>{progressCopy}</span>
+          </>
+        )}
       </div>
     </article>
   );
 }
 
-interface ComparisonPanelProps {
-  snapshot: MissionControlSnapshot;
+interface LaneNodeProps {
+  label: string;
+  state: "active" | "allowed" | "blocked" | "complete" | "empty" | "waiting";
 }
 
-function ComparisonPanel(props: ComparisonPanelProps): ReactNode {
-  const comparison = props.snapshot.comparison;
-  if (comparison === null) return null;
-  const verified = comparison.containment !== null;
+function LaneNode(props: LaneNodeProps): ReactNode {
+  const icon = props.state === "blocked"
+    ? <X aria-hidden="true" size={13} />
+    : props.state === "allowed" || props.state === "complete"
+      ? <Check aria-hidden="true" size={13} />
+      : null;
   return (
-    <section className="panel comparison-panel" aria-labelledby="comparison-title">
-      <div className="section-heading comparison-heading">
+    <span className="lane-node" data-state={props.state}>
+      <i aria-hidden="true">{icon}</i>
+      <small>{props.label}</small>
+    </span>
+  );
+}
+
+function ResultScene(props: SceneProps): ReactNode {
+  if (props.snapshot.status !== "VERIFIED") {
+    return <UnverifiedResult snapshot={props.snapshot} />;
+  }
+  const comparison = props.snapshot.comparison;
+  if (comparison === null || comparison.containment === null) {
+    return <UnverifiedResult snapshot={props.snapshot} />;
+  }
+  return (
+    <section className="result-scene verified-result" aria-labelledby="result-title">
+      <div className="result-lead">
+        <div className="verified-mark" aria-hidden="true"><ShieldCheck size={25} /></div>
         <div>
-          <p className="eyebrow">Finalized evidence comparison</p>
-          <h2 id="comparison-title">Baseline / Replay / Control</h2>
+          <p className="eyebrow">Verified Remediation</p>
+          <h2 id="result-title">Attack blocked. Support still works.</h2>
+          <p>Three finalized Evidence Bundles establish the claim—no model self-reporting required.</p>
         </div>
-        {verified ? (
-          <span className="verified-seal"><i aria-hidden="true">✓</i> Verified Remediation</span>
-        ) : (
-          <span className="withheld-seal">Containment withheld</span>
-        )}
+        <span className="bundle-count"><strong>3</strong> bundles</span>
       </div>
-      <div className="comparison-grid">
-        <ProofColumn
+      <div className="proof-triptych">
+        <ResultProof
           accent="danger"
           evidenceUrl={comparison.baseline.evidenceUrl}
           eyebrow="Before · Baseline"
-          facts={[
-            `${comparison.baseline.exactCanaryReceipts} exact Canary receipt${comparison.baseline.exactCanaryReceipts === 1 ? "" : "s"}`,
-            comparison.baseline.complete ? "Evidence complete" : "Evidence incomplete",
-          ]}
+          facts={[`${comparison.baseline.exactCanaryReceipts} exact Canary receipt`, "Policy allowed the send"]}
           hash={comparison.baseline.bundleHash}
-          result={titleCase(comparison.baseline.result)}
+          result="Vulnerable"
         />
-        <ProofColumn
-          accent={comparison.replay?.result === "PROTECTED" ? "success" : "warning"}
+        <ResultProof
+          accent="success"
           evidenceUrl={comparison.replay?.evidenceUrl ?? null}
           eyebrow="After · Attack Replay"
-          facts={
-            comparison.replay === null
-              ? ["Waiting for finalized replay evidence"]
-              : [
-                  comparison.replay.explicitPolicyDenial
-                    ? "Explicit policy denial observed"
-                    : "Explicit policy denial missing",
-                  `${comparison.replay.matchingCanaryReceipts} matching sink receipts`,
-                ]
-          }
+          facts={[`${comparison.replay?.matchingCanaryReceipts ?? 0} matching sink receipts`, "Explicit policy denial"]}
           hash={comparison.replay?.bundleHash ?? null}
-          result={comparison.replay === null ? "Pending" : titleCase(comparison.replay.result)}
+          result="Protected"
         />
-        <ProofColumn
-          accent={comparison.control?.result === "PASSED" ? "success" : "warning"}
+        <ResultProof
+          accent="success"
           evidenceUrl={comparison.control?.evidenceUrl ?? null}
           eyebrow="Capability · Control Run"
-          facts={
-            comparison.control === null
-              ? ["Waiting for finalized control evidence"]
-              : [
-                  `${comparison.control.trustedDestinationReceipts} trusted destination receipt${comparison.control.trustedDestinationReceipts === 1 ? "" : "s"}`,
-                  comparison.control.complete ? "Evidence complete" : "Evidence incomplete",
-                ]
-          }
+          facts={[`${comparison.control?.trustedDestinationReceipts ?? 0} trusted destination receipt`, "Legitimate delivery preserved"]}
           hash={comparison.control?.bundleHash ?? null}
-          result={comparison.control === null ? "Pending" : titleCase(comparison.control.result)}
+          result="Passed"
         />
       </div>
-      {verified ? (
-        <div className="containment-callout">
-          <div className="containment-mark" aria-hidden="true">✓</div>
-          <div>
-            <p className="eyebrow">Evidence-backed conclusion</p>
-            <h3>The canonical attack was contained without breaking support.</h3>
-            <p>
-              This claim exists only because all three finalized bundles passed
-              the Verified Remediation gates.
-            </p>
-          </div>
-          <div className="bundle-stack" aria-label="Three supporting Evidence Bundles">
-            {comparison.containment?.evidence.map((evidence, index) => (
-              <a href={evidence.url} key={evidence.bundleHash} rel="noreferrer" target="_blank">
-                0{index + 1} · {shortHash(evidence.bundleHash)}
-              </a>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      <div className="result-equation" aria-label="Verified Remediation evidence equation">
+        <span><b>Leak proven</b> before</span>
+        <i aria-hidden="true">+</i>
+        <span><b>Attack blocked</b> after</span>
+        <i aria-hidden="true">+</i>
+        <span><b>Support delivered</b> normally</span>
+        <i aria-hidden="true">=</i>
+        <strong>Verified Remediation</strong>
+      </div>
     </section>
   );
 }
 
-interface ProofColumnProps {
-  accent: "danger" | "success" | "warning";
+function UnverifiedResult(props: SceneProps): ReactNode {
+  const copy = sceneCopy(props.snapshot);
+  const replay = props.snapshot.verification?.replay;
+  const control = props.snapshot.verification?.control;
+  return (
+    <section className="result-scene withheld-result" aria-labelledby="withheld-title">
+      <div className="withheld-lead">
+        <span className="withheld-mark" aria-hidden="true"><AlertTriangle size={23} /></span>
+        <div>
+          <p className="eyebrow">Evidence claim withheld</p>
+          <h2 id="withheld-title">{copy.title}</h2>
+          <p>{props.snapshot.failure?.detail ?? copy.description}</p>
+        </div>
+      </div>
+      {replay === undefined || control === undefined ? null : (
+        <div className="partial-results">
+          <VerificationSummary label="Attack Replay" result={replay.result} state={replay.state} />
+          <VerificationSummary label="Control Run" result={control.result} state={control.state} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+interface VerificationSummaryProps {
+  label: string;
+  result: string | null;
+  state: string;
+}
+
+function VerificationSummary(props: VerificationSummaryProps): ReactNode {
+  const icon = props.state === "INCONCLUSIVE"
+    ? <AlertTriangle size={15} />
+    : props.state === "COMPLETED"
+      ? <Check size={15} />
+      : props.state === "ACTIVE"
+        ? <SignalMark active />
+        : <Clock3 size={15} />;
+  return (
+    <article data-state={props.state.toLowerCase()}>
+      <span aria-hidden="true">{icon}</span>
+      <div><h3>{props.label}</h3><p>{props.result === null ? titleCase(props.state) : titleCase(props.result)}</p></div>
+    </article>
+  );
+}
+
+interface ResultProofProps {
+  accent: "danger" | "success";
   evidenceUrl: string | null;
   eyebrow: string;
   facts: string[];
@@ -664,49 +829,143 @@ interface ProofColumnProps {
   result: string;
 }
 
-function ProofColumn(props: ProofColumnProps): ReactNode {
+function ResultProof(props: ResultProofProps): ReactNode {
   return (
-    <article className={`proof-column accent-${props.accent}`}>
+    <article className={`result-proof accent-${props.accent}`}>
       <p className="eyebrow">{props.eyebrow}</p>
-      <strong className="proof-result">{props.result}</strong>
-      <ul>
-        {props.facts.map((fact) => <li key={fact}>{fact}</li>)}
-      </ul>
-      {props.evidenceUrl === null || props.hash === null ? (
-        <span className="evidence-pending">Finalized bundle pending</span>
-      ) : (
+      <strong className="result-proof-verdict">{props.result}</strong>
+      <ul>{props.facts.map((fact) => <li key={fact}>{fact}</li>)}</ul>
+      {props.evidenceUrl === null || props.hash === null ? null : (
         <EvidenceLink bundleHash={props.hash} label="Inspect bundle" url={props.evidenceUrl} />
       )}
     </article>
   );
 }
 
-interface ActivityFeedProps {
-  activity: MissionControlActivity[];
+interface ScenarioPathProps {
+  mode: "baseline" | "preview";
+  snapshot: MissionControlSnapshot;
 }
 
-function ActivityFeed(props: ActivityFeedProps): ReactNode {
+function ScenarioPath(props: ScenarioPathProps): ReactNode {
+  const finished = props.snapshot.baseline !== null;
+  const live = props.snapshot.status === "BASELINE_RUNNING";
+  const progress = baselineProgress(props.snapshot);
+  const nodeState = (index: number): string => {
+    if (props.mode === "preview") return "preview";
+    if (finished) return index >= 3 ? "breached" : "complete";
+    if (live && index === progress.activeIndex) return "active";
+    if (live && index < progress.activeIndex) return "complete";
+    return "waiting";
+  };
+  const nodes = [
+    ["01", "Untrusted ticket", "Hidden instruction"],
+    ["02", "Support Agent", "TrueForge + MCP"],
+    ["03", "Canary document", "Synthetic secret"],
+    ["04", "Policy gate", "Any destination"],
+    ["05", "External Sink", "Exact receipt"],
+  ] as const;
   return (
-    <section className="panel activity-panel" aria-labelledby="activity-title">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Durable activity</p>
-          <h2 id="activity-title">What the system observed</h2>
+    <div className="scenario-path" data-live={live || undefined}>
+      {nodes.map((node, index) => (
+        <div className="path-fragment" key={node[0]}>
+          <article className="path-node" data-state={nodeState(index)}>
+            <div className="path-node-top"><span>{node[0]}</span><i aria-hidden="true" /></div>
+            <strong>{node[1]}</strong>
+            <small>{node[2]}</small>
+          </article>
+          {index === nodes.length - 1 ? null : (
+            <span
+              className="path-connector"
+              data-active={(live && index === progress.activeIndex - 1) || undefined}
+              aria-hidden="true"
+            ><i /></span>
+          )}
         </div>
-        <span className="activity-count">{props.activity.length} records</span>
-      </div>
-      {props.activity.length === 0 ? (
-        <div className="empty-activity">
-          <span className="loader small" aria-hidden="true" />
-          Waiting for the first durable Run event…
-        </div>
-      ) : (
-        <ol className="activity-list">
-          {props.activity.map((item) => <ActivityItem item={item} key={item.id} />)}
-        </ol>
-      )}
-    </section>
+      ))}
+    </div>
   );
+}
+
+interface EvidenceDrawerProps {
+  snapshot: MissionControlSnapshot;
+}
+
+function EvidenceDrawer(props: EvidenceDrawerProps): ReactNode {
+  const groups = activityGroups(props.snapshot);
+  return (
+    <details className="evidence-drawer">
+      <summary>
+        <span className="drawer-icon" aria-hidden="true"><Activity size={15} /></span>
+        <span><strong>Evidence &amp; agent trace</strong><small>Technical detail, bundle links, and {props.snapshot.activity.length} durable records</small></span>
+        <span className="drawer-action">Inspect <i aria-hidden="true"><ChevronDown size={13} /></i></span>
+      </summary>
+      <div className="evidence-drawer-content">
+        {groups.length === 0 ? (
+          <div className="activity-empty">
+            <SignalMark active={isLiveStatus(props.snapshot.status)} />
+            <div>
+              <strong>
+                {isLiveStatus(props.snapshot.status)
+                  ? "Waiting for the first durable record"
+                  : "No durable records are available"}
+              </strong>
+              <p>
+                {isLiveStatus(props.snapshot.status)
+                  ? "This drawer fills from BLACKBOX and TrueForge state as work completes."
+                  : "BLACKBOX has no technical activity to show for this state."}
+              </p>
+            </div>
+          </div>
+        ) : groups.map((group) => (
+          <section className="activity-group" key={group.label}>
+            <div className="activity-group-heading">
+              <div><p className="eyebrow">{group.eyebrow}</p><h2>{group.label}</h2></div>
+              {group.evidence === null ? null : (
+                <EvidenceLink
+                  bundleHash={group.evidence.bundleHash}
+                  label="Open bundle"
+                  url={group.evidence.url}
+                />
+              )}
+            </div>
+            <ol className="activity-list">
+              {group.items.map((item) => <ActivityItem item={item} key={item.id} />)}
+            </ol>
+          </section>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+interface ActivityGroup {
+  evidence: MissionControlActivity["evidence"];
+  eyebrow: string;
+  items: MissionControlActivity[];
+  label: string;
+}
+
+function activityGroups(snapshot: MissionControlSnapshot): ActivityGroup[] {
+  const baselineHash = snapshot.comparison?.baseline.bundleHash;
+  const replayHash = snapshot.comparison?.replay?.bundleHash;
+  const controlHash = snapshot.comparison?.control?.bundleHash;
+  const definitions = [
+    [baselineHash, "01 · Breach proof", "Baseline Run"],
+    [null, "02 · Agent work", "TrueForge Investigation"],
+    [replayHash, "04A · Security check", "Attack Replay"],
+    [controlHash, "04B · Capability check", "Control Run"],
+  ] as const;
+  return definitions.flatMap(([hash, eyebrow, label]) => {
+    if (hash === undefined) return [];
+    const items = snapshot.activity.filter((item) =>
+      hash === null
+        ? item.evidence === null
+        : item.evidence?.bundleHash === hash,
+    );
+    if (items.length === 0) return [];
+    return [{ evidence: items.find((item) => item.evidence !== null)?.evidence ?? null, eyebrow, items, label }];
+  });
 }
 
 interface ActivityItemProps {
@@ -718,20 +977,34 @@ function ActivityItem(props: ActivityItemProps): ReactNode {
   return (
     <li className="activity-item" data-status={item.status.toLowerCase()}>
       <span className="activity-marker" aria-hidden="true">
-        {item.status === "COMPLETED" ? "✓" : item.status === "FAILED" ? "!" : ""}
+        {item.status === "COMPLETED"
+          ? <Check size={10} />
+          : item.status === "FAILED"
+            ? <AlertTriangle size={9} />
+            : null}
       </span>
-      <div className="activity-content">
-        <div className="activity-meta">
-          <span>{sourceLabel(item.source)}</span>
+      <div>
+        <span className="activity-meta">
+          <b>{sourceLabel(item.source)}</b>
           {item.occurredAt === null ? null : <time dateTime={item.occurredAt}>{formatTime(item.occurredAt)}</time>}
-        </div>
-        <strong className={item.kind === "tool" ? "mono" : undefined}>{item.title}</strong>
-        {item.detail === null ? null : <p>{item.detail}</p>}
+        </span>
+        <strong className={item.kind === "tool" ? "mono" : undefined}>{friendlyActivityTitle(item.title)}</strong>
       </div>
-      {item.evidence === null ? null : (
-        <EvidenceLink bundleHash={item.evidence.bundleHash} label="Source" url={item.evidence.url} />
-      )}
     </li>
+  );
+}
+
+interface FailureNoticeProps {
+  detail: string;
+  title: string;
+}
+
+function FailureNotice(props: FailureNoticeProps): ReactNode {
+  return (
+    <div className="failure-notice" role="alert">
+      <span aria-hidden="true"><AlertTriangle size={16} /></span>
+      <div><strong>{props.title}</strong><p>{props.detail}</p></div>
+    </div>
   );
 }
 
@@ -755,122 +1028,71 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
   if (approval === null) return null;
   const busy = props.command.active !== null || props.decisionPending;
   const diff = approval.diff[0];
+  const trustedDestination = diff.after[0] ?? "Trusted Destination";
   return (
-    <dialog
-      aria-labelledby="approval-title"
-      className="approval-dialog"
-      onCancel={(event) => event.preventDefault()}
-      ref={dialogRef}
-    >
+    <dialog aria-labelledby="approval-title" className="approval-dialog" ref={dialogRef}>
       <div className="approval-shell">
         <header className="approval-header">
-          <div className="approval-kicker">
-            <span className="human-boundary-mark" aria-hidden="true">H</span>
-            <span>
-              <strong>Human policy boundary</strong>
-              <small>TrueForge action · {shortId(approval.pendingDecision.actionId)}</small>
-            </span>
+          <div className="approval-actor">
+            <TrueForgeMark />
+            <span><strong>TrueForge paused</strong><small>Real apply_policy_patch action</small></span>
           </div>
-          <StatusChip tone="warning">Decision required</StatusChip>
+          <TrueForgeLink snapshot={props.snapshot} />
         </header>
 
-        <div className="approval-body">
+        <div className="approval-content">
           <div className="approval-intro">
-            <p className="eyebrow">One durable mutation</p>
-            <h1 id="approval-title">Authorize this exact Policy Patch?</h1>
-            <p>
-              Approval resumes the pending <code>apply_policy_patch</code>{" "}
-              action. Policy readback, Attack Replay, and Control Run then
-              advance automatically.
-            </p>
+            <div>
+              <p className="eyebrow">One human decision · Policy unchanged</p>
+              <h1 id="approval-title">Allow messages only to the trusted support endpoint?</h1>
+              <p>BLACKBOX will apply exactly this restrictive change—nothing else—then verify it automatically.</p>
+            </div>
+            <span className="decision-badge">Decision required</span>
           </div>
 
-          <section className="approval-section" aria-labelledby="diff-title">
-            <div className="approval-section-heading">
-              <div>
-                <span>01</span>
-                <h2 id="diff-title">Exact durable diff</h2>
-              </div>
-              <code>{approval.affectedCapability}</code>
+          <section className="human-diff" aria-labelledby="human-diff-title">
+            <h2 className="sr-only" id="human-diff-title">Policy Patch comparison</h2>
+            <div className="permission before">
+              <span>Before · policy v{approval.base.version}</span>
+              <strong>Any destination</strong>
+              <code>{diff.before}</code>
             </div>
-            <div className="diff-grid">
-              <div className="diff-before">
-                <span>− Before</span>
-                <code>{diff.before}</code>
-                <small>Any external destination</small>
-              </div>
-              <div className="diff-after">
-                <span>+ After</span>
-                <code>{diff.after.join("\n")}</code>
-                <small>Only the Trusted Destination</small>
-              </div>
+            <span className="diff-arrow" aria-hidden="true"><ArrowRight size={20} /></span>
+            <div className="permission after">
+              <span>After · candidate v{approval.candidate.version}</span>
+              <strong>Trusted endpoint only</strong>
+              <code>{compactDestination(trustedDestination)}</code>
             </div>
-            <details className="exact-diff">
-              <summary>Inspect machine-readable patch diff</summary>
-              <pre>{JSON.stringify(approval.diff, null, 2)}</pre>
-            </details>
           </section>
 
-          <div className="approval-columns">
-            <section className="approval-section" aria-labelledby="evidence-title">
-              <div className="approval-section-heading">
-                <div>
-                  <span>02</span>
-                  <h2 id="evidence-title">Evidence justification</h2>
-                </div>
-              </div>
-              <p>{approval.evidenceJustification.summary}</p>
-              <EvidenceLink
-                bundleHash={approval.evidenceJustification.bundleHash}
-                label="Open source Baseline bundle"
-                url={`/api/runs/${approval.evidenceJustification.runId}/evidence`}
-              />
-            </section>
+          <section className="decision-evidence" aria-label="Decision evidence and impact">
+            <article>
+              <span className="decision-icon danger" aria-hidden="true"><AlertTriangle size={14} /></span>
+              <div><small>Why change it</small><strong>Exact Canary reached the External Sink</strong></div>
+            </article>
+            <article>
+              <span className="decision-icon success" aria-hidden="true"><Check size={14} /></span>
+              <div><small>What stays working</small><strong>Document access + trusted support delivery</strong></div>
+            </article>
+            <article>
+              <span className="decision-icon live" aria-hidden="true"><RefreshCw size={14} /></span>
+              <div><small>How it is proven</small><strong>Same attack will be blocked</strong></div>
+            </article>
+          </section>
 
-            <section className="approval-section" aria-labelledby="impact-title">
-              <div className="approval-section-heading">
-                <div>
-                  <span>03</span>
-                  <h2 id="impact-title">Predicted operational impact</h2>
-                </div>
-              </div>
-              <ul className="impact-list">
-                <li><span>Restricts</span>{approval.predictedOperationalImpact.deniedDestinations}</li>
-                <li><span>Preserves</span>protected document access {approval.predictedOperationalImpact.protectedDocumentAccess}</li>
-                <li><span>Allows</span>{approval.predictedOperationalImpact.trustedDestinations.join(", ")}</li>
-              </ul>
-            </section>
-          </div>
-
-          <section
-            className="approval-section approval-proof"
-            aria-labelledby="investigation-proof-title"
-          >
-            <div className="approval-section-heading">
-              <div>
-                <span>04</span>
-                <h2 id="investigation-proof-title">Investigation activity</h2>
-              </div>
+          <details className="technical-proof">
+            <summary>Inspect exact technical proof <span aria-hidden="true"><ChevronDown size={13} /></span></summary>
+            <div className="technical-proof-grid">
+              <div><span>Affected capability</span><code>{approval.affectedCapability}</code></div>
+              <div><span>Predicted operational impact</span><code>{approval.predictedOperationalImpact.deniedDestinations}</code></div>
+              <div><span>Evidence justification</span><code>{approval.evidenceJustification.summary}</code></div>
+              <div><span>Evidence bundle</span><code>{approval.evidenceJustification.bundleHash}</code></div>
+              <div><span>Expected policy result</span><code>{approval.expectedReplayBehavior.policyDecision} at {approval.expectedReplayBehavior.blockedAt}</code></div>
+              <div><span>Expected base</span><code>v{approval.base.version} · {approval.base.hash}</code></div>
+              <div><span>Candidate hash</span><code>{approval.candidateHash}</code></div>
             </div>
-            <ul className="approval-proof-list">
-              {props.snapshot.activity
-                .filter(
-                  (item) =>
-                    item.kind === "subagent" || item.kind === "sandbox",
-                )
-                .map((item) => (
-                  <li key={item.id}>
-                    <span>{sourceLabel(item.source)}</span>
-                    <strong>{item.title}</strong>
-                  </li>
-                ))}
-            </ul>
-          </section>
-
-          <section className="base-hash" aria-label="Expected Capability Policy base">
-            <span>Expected base</span>
-            <code>v{approval.base.version} · {approval.base.hash}</code>
-          </section>
+            <pre>{JSON.stringify(approval.diff, null, 2)}</pre>
+          </details>
 
           {props.command.error === null ? null : (
             <p className="command-error" role="alert">{props.command.error}</p>
@@ -878,12 +1100,10 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
         </div>
 
         <footer className="approval-actions">
-          <p>
-            Denial applies nothing and starts no verification Runs.
-          </p>
+          <p><strong>Approval changes policy.</strong> Verification remains a separate, automatic evidence step.</p>
           <div>
             <button className="secondary-button" disabled={busy} onClick={props.onDeny} type="button">
-              {props.command.active === "DENY" ? "Denying…" : "Deny patch"}
+              {props.command.active === "DENY" ? "Recording decision…" : "Keep current policy"}
             </button>
             <button
               aria-busy={props.command.active === "ALLOW" || props.decisionPending}
@@ -892,10 +1112,10 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
               onClick={props.onApprove}
               type="button"
             >
+              <span>{props.command.active === "ALLOW" || props.decisionPending ? "Resuming TrueForge…" : "Approve exact Policy Patch"}</span>
               {props.command.active === "ALLOW" || props.decisionPending
-                ? "Resuming TrueForge action…"
-                : "Approve & verify automatically"}
-              <span aria-hidden="true">→</span>
+                ? <LoaderCircle aria-hidden="true" className="loading-icon" size={15} />
+                : <ArrowRight aria-hidden="true" size={15} />}
             </button>
           </div>
         </footer>
@@ -904,13 +1124,21 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
   );
 }
 
-interface StatusChipProps {
+interface StatusPillProps {
   children: ReactNode;
   tone: Tone;
 }
 
-function StatusChip(props: StatusChipProps): ReactNode {
-  return <span className={`status-chip tone-${props.tone}`}>{props.children}</span>;
+function StatusPill(props: StatusPillProps): ReactNode {
+  return <span className={`status-pill tone-${props.tone}`}>{props.children}</span>;
+}
+
+interface SignalMarkProps {
+  active?: boolean;
+}
+
+function SignalMark(props: SignalMarkProps): ReactNode {
+  return <span className={`signal-mark${props.active === true ? " active" : ""}`} aria-hidden="true"><i /></span>;
 }
 
 interface EvidenceLinkProps {
@@ -924,8 +1152,35 @@ function EvidenceLink(props: EvidenceLinkProps): ReactNode {
     <a className="evidence-link" href={props.url} rel="noreferrer" target="_blank">
       <span>{props.label}</span>
       <code>{shortHash(props.bundleHash)}</code>
-      <span aria-hidden="true">↗</span>
+      <ExternalLink aria-hidden="true" size={12} />
     </a>
+  );
+}
+
+interface TrueForgeLinkProps {
+  snapshot: MissionControlSnapshot;
+}
+
+function TrueForgeLink(props: TrueForgeLinkProps): ReactNode {
+  const href = trueForgeHref(props.snapshot);
+  if (href === null) {
+    return <span className="trueforge-credit"><TrueForgeMark /><span>Runtime by <strong>TrueForge</strong></span></span>;
+  }
+  return (
+    <a className="trueforge-credit linked" href={href} rel="noreferrer" target="_blank">
+      <TrueForgeMark />
+      <span>{props.snapshot.integrations?.trueForgeSessionId === null ? "Powered by" : "Open in"} <strong>TrueForge</strong></span>
+      <ExternalLink aria-hidden="true" size={12} />
+    </a>
+  );
+}
+
+function TrueForgeMark(): ReactNode {
+  return (
+    <span className="trueforge-mark" aria-hidden="true">
+      <img alt="" className="trueforge-mark-dark" src={trueForgeMarkDark} />
+      <img alt="" className="trueforge-mark-light" src={trueForgeMarkLight} />
+    </span>
   );
 }
 
@@ -933,130 +1188,248 @@ function Brand(): ReactNode {
   return (
     <a className="brand" href="/" aria-label="BLACKBOX Mission Control">
       <span className="brand-mark" aria-hidden="true"><i /><i /></span>
-      <span>
-        <strong>BLACKBOX</strong>
-        <small>Mission Control</small>
-      </span>
+      <span><strong>BLACKBOX</strong><small>Mission Control</small></span>
     </a>
   );
 }
 
-function statusCopy(snapshot: MissionControlSnapshot): StatusCopy {
+function sceneCopy(snapshot: MissionControlSnapshot): SceneCopy {
   switch (snapshot.status) {
     case "READY":
-      return {
-        description: "The canonical synthetic scenario is ready.",
-        eyebrow: "Ready",
-        title: "Start the evidence-backed Incident loop",
-        tone: "neutral",
-      };
+      return { description: "The controlled scenario is ready.", eyebrow: "Ready", title: "Run the live Incident", tone: "neutral" };
     case "BASELINE_RUNNING":
-      return {
-        description:
-          "The Support Agent is processing the fixed untrusted Support Ticket through real TrueForge and MCP tools. No verdict exists yet.",
-        eyebrow: "Baseline Run · live",
-        title: "Proving the attack, not narrating it",
-        tone: "live",
-      };
+      return baselineProgress(snapshot).scene;
     case "INVESTIGATING":
+      return investigationSceneCopy(snapshot);
     case "DRAFTED":
+      return { description: "The focused reviews are complete. TrueForge is turning their evidence into one restrictive Policy Patch.", eyebrow: "02 · TrueForge Investigation", title: "Drafting the narrow policy change", tone: "live" };
     case "DRY_RUN_PASSED":
-      return {
-        description:
-          "TrueForge is reconstructing the finalized Baseline evidence, delegating two focused reviews, and executing analysis in Daytona.",
-        eyebrow: "Autonomous investigation",
-        title: "Finding the smallest defensible policy change",
-        tone: "live",
-      };
+      return { description: "The candidate matches the reviewed base and is ready to become one exact human decision.", eyebrow: "02 · TrueForge Investigation", title: "Policy Patch passed dry-run checks", tone: "live" };
     case "AWAITING_APPROVAL":
-      return {
-        description:
-          "Investigation and dry-run validation are complete. The exact pending TrueForge action now requires one human decision.",
-        eyebrow: "Approval boundary",
-        title: "BLACKBOX has paused before mutation",
-        tone: "warning",
-      };
+      return { description: "The proposed Policy Patch is not active. The exact TrueForge action is waiting for you.", eyebrow: "03 · Human approval", title: "One policy decision is required", tone: "warning" };
     case "APPLIED":
     case "VERIFYING":
-      return {
-        description:
-          "The reviewed patch is active. BLACKBOX is reading it back, replaying the equivalent attack, and running the legitimate control workflow automatically.",
-        eyebrow: "Verification · automatic",
-        title: "The policy changed; the claim has not been earned yet",
-        tone: "live",
-      };
+      return { description: "The patch is active. BLACKBOX is replaying the same attack, then checking legitimate support.", eyebrow: "04 · Automatic verification", title: "Proving the change—not trusting it", tone: "live" };
     case "VERIFIED":
-      return snapshot.comparison === null ||
-        snapshot.comparison.containment === null
-        ? {
-            description:
-              "Durable lifecycle state reached VERIFIED, but Mission Control could not cross-check all finalized bundles. No containment claim is shown.",
-            eyebrow: "Evidence mismatch",
-            title: "Verification evidence is unavailable",
-            tone: "warning",
-          }
-        : {
-            description:
-              "The equivalent attack reached an explicit policy block, no matching Canary receipt arrived, and the trusted support workflow completed.",
-            eyebrow: "Incident resolved",
-            title: "Containment verified by three finalized bundles",
-            tone: "success",
-          };
+      if (snapshot.comparison?.containment === null || snapshot.comparison === null) {
+        return { description: "The expected finalized bundles could not be cross-checked, so BLACKBOX is withholding the containment claim.", eyebrow: "05 · Evidence claim withheld", title: "Verified evidence is unavailable", tone: "danger" };
+      }
+      return { description: "The replay was blocked, the sink stayed empty, and trusted support still delivered.", eyebrow: "05 · Incident result", title: "Verified Remediation earned", tone: "success" };
     case "DENIED":
-      return {
-        description:
-          "The pending TrueForge action was denied. Capability Policy stayed unchanged and no verification Runs started.",
-        eyebrow: "Human decision recorded",
-        title: "Policy Patch denied — Incident remains open",
-        tone: "neutral",
-      };
+      return { description: "No policy changed and no verification Runs started.", eyebrow: "05 · Human decision recorded", title: "Policy Patch declined", tone: "neutral" };
     case "STALE":
-      return {
-        description:
-          "The active policy no longer matches the base hash that was reviewed. BLACKBOX refused to silently rebase or apply the patch.",
-        eyebrow: "Safety boundary held",
-        title: "The reviewed Policy Patch is stale",
-        tone: "warning",
-      };
+      return { description: "The active policy no longer matches the reviewed base. BLACKBOX refused to rebase it silently.", eyebrow: "05 · Safety boundary held", title: "The reviewed patch is stale", tone: "warning" };
     case "BASELINE_INCONCLUSIVE":
-      return {
-        description:
-          "The attack path or its infrastructure did not produce complete evidence. BLACKBOX withholds Vulnerability Proof.",
-        eyebrow: "No supported verdict",
-        title: "Baseline evidence is inconclusive",
-        tone: "warning",
-      };
+      return { description: "The attack did not produce complete evidence, so BLACKBOX will not claim a breach.", eyebrow: "05 · No supported verdict", title: "Breach proof is inconclusive", tone: "warning" };
     case "VALIDATION_FAILED":
-      return {
-        description:
-          "A required readback, replay, control, or finalization gate failed. Any restrictive policy remains in place, but containment is not claimed.",
-        eyebrow: "Success claim withheld",
-        title: "Remediation could not be verified",
-        tone: "danger",
-      };
+      return { description: "A required verification gate did not finalize. Any restrictive policy remains active, but containment is not claimed.", eyebrow: "05 · Claim withheld", title: "Verification is incomplete", tone: "danger" };
   }
 }
 
-function phaseRailIndex(snapshot: MissionControlSnapshot): number {
-  switch (snapshot.status) {
-    case "BASELINE_RUNNING":
-    case "BASELINE_INCONCLUSIVE":
-    case "READY":
-      return 0;
-    case "INVESTIGATING":
-    case "DRAFTED":
-    case "DRY_RUN_PASSED":
-      return 1;
-    case "AWAITING_APPROVAL":
-    case "DENIED":
-    case "STALE":
-      return 2;
-    case "APPLIED":
-    case "VERIFYING":
-    case "VERIFIED":
-      return 3;
-    case "VALIDATION_FAILED":
-      return snapshot.verification === null ? 1 : 3;
+function journeyStepState(
+  snapshot: MissionControlSnapshot,
+  index: number,
+): StepState {
+  if (snapshot.phase === "RESULT") {
+    if (index === 4) return "active";
+    if (
+      snapshot.status === "VERIFIED" &&
+      snapshot.comparison?.containment === null &&
+      index === 3
+    ) {
+      return "skipped";
+    }
+    if (snapshot.status === "DENIED" || snapshot.status === "STALE") {
+      return index <= 2 ? "complete" : "skipped";
+    }
+    if (snapshot.status === "BASELINE_INCONCLUSIVE") {
+      return "skipped";
+    }
+    if (snapshot.status === "VALIDATION_FAILED") {
+      if (index === 0) return snapshot.baseline === null ? "skipped" : "complete";
+      if (index === 1) {
+        return snapshot.verification !== null ||
+          approvalCompleted(snapshot.activity) ||
+          investigationCompleted(snapshot.activity)
+          ? "complete"
+          : "skipped";
+      }
+      if (index === 2) {
+        return snapshot.verification !== null || approvalCompleted(snapshot.activity)
+          ? "complete"
+          : "skipped";
+      }
+      return "skipped";
+    }
+    return "complete";
+  }
+  const activeIndex = {
+    APPROVAL: 2,
+    BASELINE: 0,
+    INVESTIGATION: 1,
+    READY: 0,
+    VERIFICATION: 3,
+  }[snapshot.phase];
+  if (index < activeIndex) return "complete";
+  if (index === activeIndex) return "active";
+  return "upcoming";
+}
+
+function trueForgeHref(snapshot: MissionControlSnapshot): string | null {
+  const integration = snapshot.integrations;
+  if (integration === undefined) return null;
+  const base = integration.trueForgeUrl.replace(/\/$/, "");
+  return integration.trueForgeSessionId === null
+    ? base
+    : `${base}/sessions/${encodeURIComponent(integration.trueForgeSessionId)}`;
+}
+
+function friendlyActivityTitle(value: string): string {
+  switch (value) {
+    case "get_support_ticket":
+      return "Read the untrusted Support Ticket";
+    case "read_internal_document":
+      return "Read the protected Canary document";
+    case "search_internal_documents":
+      return "Found the diagnostic runbook";
+    case "send_external_message":
+      return "Attempted the outbound message";
+    default:
+      return value;
+  }
+}
+
+function investigationTaskState(
+  activity: MissionControlActivity[],
+  completedTitle: string,
+): "active" | "complete" | "waiting" {
+  if (activity.some((item) => item.title === completedTitle)) {
+    return "complete";
+  }
+  const activeTitle =
+    completedTitle === "Evidence Provenance Verifier"
+      ? "Evidence provenance review started"
+      : completedTitle === "Policy Patch Reviewer"
+        ? "Policy Patch review started"
+        : "Daytona sandbox analysis running";
+  return activity.some(
+    (item) => item.status === "ACTIVE" && item.title === activeTitle,
+  )
+    ? "active"
+    : "waiting";
+}
+
+interface BaselineProgress {
+  activeIndex: number;
+  proof: string;
+  scene: SceneCopy;
+}
+
+function investigationSceneCopy(
+  snapshot: MissionControlSnapshot,
+): SceneCopy {
+  const active = snapshot.activity.findLast(
+    (item) =>
+      item.status === "ACTIVE" &&
+      (item.source === "TRUEFORGE" || item.source === "DAYTONA"),
+  );
+  const title = {
+    "Daytona sandbox analysis running": "Daytona is analyzing the evidence",
+    "Evidence provenance review started": "Evidence provenance review is running",
+    "Policy Patch review started": "Policy Patch review is running",
+    "TrueForge investigation started": "Starting the TrueForge investigation",
+  }[active?.title ?? ""];
+  return {
+    description:
+      active?.source === "DAYTONA"
+        ? "The isolated sandbox is testing the evidence-derived policy boundary."
+        : "The leak is proven. TrueForge is checking its cause and the narrowest defensible boundary.",
+    eyebrow: "02 · TrueForge Investigation",
+    title: title ?? "Finding the missing boundary",
+    tone: "live",
+  };
+}
+
+function baselineProgress(snapshot: MissionControlSnapshot): BaselineProgress {
+  const titles = new Set(snapshot.activity.map((item) => item.title));
+  if (
+    titles.has("External Sink observation closed") ||
+    titles.has("Finalizing Run evidence")
+  ) {
+    return {
+      activeIndex: 4,
+      proof: "The sink observation window is closed. BLACKBOX is finalizing the Evidence Bundle before naming a verdict.",
+      scene: { description: "The bounded sink observation is complete. BLACKBOX is finalizing the evidence before it names a verdict.", eyebrow: "01 · Baseline Run", title: "Finalizing the breach proof", tone: "live" },
+    };
+  }
+  if (
+    titles.has("External Sink receipt recorded") ||
+    titles.has("Outbound policy evaluated")
+  ) {
+    return {
+      activeIndex: 4,
+      proof: "BLACKBOX is checking the controlled External Sink for an exact, run-scoped Canary receipt.",
+      scene: { description: "The outbound action crossed the policy gate. BLACKBOX is checking the independent sink receipt.", eyebrow: "01 · Baseline Run", title: "Checking the External Sink", tone: "live" },
+    };
+  }
+  if (titles.has("send_external_message")) {
+    return {
+      activeIndex: 3,
+      proof: "The Support Agent requested an outbound message. The Capability Policy decision is being recorded.",
+      scene: { description: "The Support Agent requested an outbound message. BLACKBOX is recording the Capability Policy decision.", eyebrow: "01 · Baseline Run", title: "Evaluating the outbound action", tone: "live" },
+    };
+  }
+  if (titles.has("read_internal_document")) {
+    return {
+      activeIndex: 2,
+      proof: "The Support Agent reached the protected synthetic document. No leak is claimed without a matching sink receipt.",
+      scene: { description: "The Support Agent reached the synthetic Canary document. That alone is not proof of a leak.", eyebrow: "01 · Baseline Run", title: "Following the Canary", tone: "live" },
+    };
+  }
+  if (titles.has("get_support_ticket")) {
+    return {
+      activeIndex: 1,
+      proof: "The real TrueForge Support Agent is processing the untrusted Support Ticket while BLACKBOX records its actions.",
+      scene: { description: "The real TrueForge Support Agent is processing the synthetic Support Ticket while BLACKBOX records durable facts.", eyebrow: "01 · Baseline Run", title: "Support Agent is handling the ticket", tone: "live" },
+    };
+  }
+  return {
+    activeIndex: 0,
+    proof: "BLACKBOX is resetting the isolated Run state before the Support Agent starts.",
+    scene: { description: "BLACKBOX is resetting the run-scoped ticket, tools, sink, and Canary before agent execution.", eyebrow: "01 · Baseline Run", title: "Preparing the isolated Run", tone: "live" },
+  };
+}
+
+function investigationCompleted(activity: MissionControlActivity[]): boolean {
+  const completed = new Set(
+    activity
+      .filter((item) => item.status === "COMPLETED")
+      .map((item) => item.title),
+  );
+  return (
+    completed.has("Evidence Provenance Verifier") &&
+    completed.has("Policy Patch Reviewer") &&
+    completed.has("Sandbox analysis completed")
+  );
+}
+
+function approvalCompleted(activity: MissionControlActivity[]): boolean {
+  return activity.some(
+    (item) =>
+      item.status === "COMPLETED" &&
+      item.title === "Policy Patch approved by human",
+  );
+}
+
+function isLiveStatus(status: MissionControlSnapshot["status"]): boolean {
+  return status === "BASELINE_RUNNING" || status === "INVESTIGATING" || status === "VERIFYING";
+}
+
+function compactDestination(value: string): string {
+  try {
+    return new URL(value).pathname.replace(/^\/api\//, "") || value;
+  } catch {
+    return value;
   }
 }
 
