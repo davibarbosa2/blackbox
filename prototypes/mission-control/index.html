@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BLACKBOX flow wireframe</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { color-scheme: light; --ink:#202020; --muted:#666; --line:#999; --soft-line:#d5d5d5; --paper:#f3f3f1; --panel:#fff; --fill:#e8e8e5; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.45 Arial,Helvetica,sans-serif; }
+    button { font:inherit; }
+    button:focus-visible { outline:3px solid #555; outline-offset:2px; }
+    .shell { max-width:1180px; margin:0 auto; padding:24px; }
+    .prototype-note { display:flex; justify-content:space-between; gap:20px; align-items:start; margin-bottom:18px; padding:12px 14px; border:2px dashed var(--line); background:#fff; }
+    .prototype-note strong { display:block; margin-bottom:3px; }
+    .prototype-note p { max-width:760px; margin:0; color:var(--muted); }
+    .tag { white-space:nowrap; font:700 12px/1.2 ui-monospace,monospace; text-transform:uppercase; }
+    .scenario-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:18px; padding:12px; border:1px solid var(--line); background:var(--panel); }
+    .scenario-bar strong { margin-right:8px; }
+    .scenario { padding:7px 11px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+    .scenario[aria-pressed="true"] { background:var(--ink); color:#fff; }
+    .steps { display:grid; grid-template-columns:repeat(6,1fr); margin-bottom:18px; border:1px solid var(--line); background:var(--panel); }
+    .step { min-height:66px; padding:10px; border:0; border-right:1px solid var(--soft-line); background:transparent; color:var(--muted); text-align:left; cursor:pointer; }
+    .step:last-child { border-right:0; }
+    .step small { display:block; margin-bottom:4px; font:700 11px ui-monospace,monospace; }
+    .step.active { background:var(--ink); color:#fff; }
+    .step.complete:not(.active) { background:var(--fill); color:var(--ink); }
+    .workspace { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:18px; }
+    .screen,.state-panel { border:1px solid var(--line); background:var(--panel); }
+    .screen-head { display:flex; justify-content:space-between; gap:18px; align-items:start; padding:20px 22px; border-bottom:1px solid var(--soft-line); }
+    .screen-head h1 { margin:2px 0 5px; font-size:27px; }
+    .screen-head p { max-width:650px; margin:0; color:var(--muted); }
+    .status { display:inline-block; padding:5px 8px; border:1px solid var(--ink); font:700 11px ui-monospace,monospace; text-transform:uppercase; white-space:nowrap; }
+    .screen-body { min-height:430px; padding:22px; }
+    .screen-actions { display:flex; justify-content:space-between; gap:10px; padding:16px 22px; border-top:1px solid var(--soft-line); background:#fafafa; }
+    .action-group { display:flex; flex-wrap:wrap; gap:8px; }
+    .button { min-height:40px; padding:0 15px; border:1px solid var(--ink); background:#fff; color:var(--ink); cursor:pointer; font-weight:700; }
+    .button.primary { background:var(--ink); color:#fff; }
+    .button:disabled { opacity:.4; cursor:not-allowed; }
+    .box { margin-bottom:16px; padding:16px; border:1px solid var(--line); }
+    .box.dashed { border-style:dashed; }
+    .box h2,.box h3 { margin:0 0 7px; font-size:17px; }
+    .box p { margin:0; color:#444; }
+    .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .label { margin:0 0 5px; color:var(--muted); font:700 11px ui-monospace,monospace; text-transform:uppercase; }
+    .big-result { display:block; margin:5px 0; font-size:28px; }
+    .timeline { margin:0; padding:0; list-style:none; }
+    .timeline li { display:grid; grid-template-columns:80px 1fr; gap:12px; padding:12px 0; border-top:1px solid var(--soft-line); }
+    .timeline li:first-child { border-top:0; }
+    .timeline time { color:var(--muted); font:12px ui-monospace,monospace; }
+    .code { margin:8px 0 0; padding:12px; overflow:auto; background:#ededeb; font:13px/1.5 ui-monospace,monospace; white-space:pre-wrap; }
+    .checklist { margin:8px 0 0; padding-left:20px; }
+    .checklist li { margin:7px 0; }
+    .approval { border:2px solid var(--ink); }
+    .decision-note { width:100%; min-height:70px; margin-top:10px; padding:10px; border:1px solid var(--line); resize:vertical; font:inherit; }
+    .progress-row { display:grid; grid-template-columns:24px 1fr auto; gap:10px; padding:12px 0; border-top:1px solid var(--soft-line); }
+    .progress-row:first-child { border-top:0; }
+    .marker { width:20px; height:20px; border:1px solid var(--ink); text-align:center; font:700 12px/18px ui-monospace,monospace; }
+    .state-panel { align-self:start; }
+    .state-panel h2 { margin:0; padding:15px; border-bottom:1px solid var(--soft-line); font-size:15px; }
+    .state-list { margin:0; }
+    .state-row { padding:12px 15px; border-bottom:1px solid var(--soft-line); }
+    .state-row dt { margin-bottom:4px; color:var(--muted); font:700 10px ui-monospace,monospace; text-transform:uppercase; }
+    .state-row dd { margin:0; font-weight:700; }
+    .test-note { padding:15px; }
+    .test-note h3 { margin:0 0 7px; font-size:14px; }
+    .test-note p { margin:0; color:var(--muted); font-size:13px; }
+    @media (max-width:800px) {
+      .shell { padding:12px; }
+      .steps { grid-template-columns:repeat(3,1fr); }
+      .step:nth-child(3) { border-right:0; }
+      .step:nth-child(-n+3) { border-bottom:1px solid var(--soft-line); }
+      .workspace,.grid-2 { grid-template-columns:1fr; }
+      .state-panel { order:-1; }
+      .state-list { display:grid; grid-template-columns:1fr 1fr; }
+      .screen-head,.prototype-note { display:block; }
+      .tag,.status { margin-top:10px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="prototype-note">
+      <div><strong>Prototype question</strong><p>Does the flow from proven Incident to human-approved, Verified Remediation feel clear enough to delegate to BLACKBOX?</p></div>
+      <span class="tag">Throwaway wireframe</span>
+    </header>
+    <nav class="scenario-bar" aria-label="Guided scenarios">
+      <strong>Try a scenario:</strong>
+      <button class="scenario" data-scenario="happy" aria-pressed="true">Happy path</button>
+      <button class="scenario" data-scenario="reject" aria-pressed="false">Human rejects</button>
+      <button class="scenario" data-scenario="inconclusive" aria-pressed="false">Replay inconclusive</button>
+    </nav>
+    <nav id="steps" class="steps" aria-label="Flow steps"></nav>
+    <div class="workspace">
+      <section id="screen" class="screen" aria-live="polite"></section>
+      <aside id="state" class="state-panel" aria-label="Current prototype state"></aside>
+    </div>
+  </main>
+
+  <script>
+    // Portable prototype state machine. The DOM only renders its output.
+    const Flow = (() => {
+      const phases = ['incident','evidence','patch','approval','replay','result'];
+      const initial = (scenario = 'happy') => ({
+        phase:'incident', scenario, baselineVerdict:'Vulnerable', policyPatch:'Proposed — not applied',
+        approval:'Required', replayVerdict:'Not run', controlRun:'Not run', outcome:'Incident open',
+        lastChange:'Incident opened from observable evidence'
+      });
+
+      function finish(state) {
+        if (state.scenario === 'inconclusive') return {
+          ...state, phase:'result', replayVerdict:'Inconclusive', controlRun:'Passed',
+          outcome:'Needs another replay', lastChange:'Replay evidence was incomplete'
+        };
+        return {
+          ...state, phase:'result', replayVerdict:'Protected', controlRun:'Passed',
+          outcome:'Verified Remediation', lastChange:'Attack blocked and legitimate support preserved'
+        };
+      }
+
+      function presetForPhase(phase, scenario) {
+        const state = initial(scenario);
+        const index = phases.indexOf(phase);
+        state.phase = phase;
+        if (index >= 1) state.lastChange = 'Vulnerability Proof reviewed';
+        if (index >= 2) state.lastChange = 'Smallest Policy Patch proposed';
+        if (index >= 3) state.lastChange = 'Waiting at the human approval boundary';
+        if (index >= 4) {
+          state.policyPatch = 'Applied — version 2'; state.approval = 'Approved by human';
+          state.outcome = 'Verification pending'; state.lastChange = 'Policy Patch applied after approval';
+        }
+        return index >= 5 ? finish(state) : state;
+      }
+
+      function transition(state, action) {
+        const index = phases.indexOf(state.phase);
+        if (action.type === 'RESET') return initial(state.scenario);
+        if (action.type === 'SCENARIO') return initial(action.scenario);
+        if (action.type === 'GOTO') return presetForPhase(action.phase, state.scenario);
+        if (action.type === 'BACK' && index > 0) return presetForPhase(phases[index - 1], state.scenario);
+        if (action.type === 'NEXT' && index < 3) return presetForPhase(phases[index + 1], state.scenario);
+        if (action.type === 'APPROVE' && state.phase === 'approval') return {
+          ...state, phase:'replay', policyPatch:'Applied — version 2', approval:'Approved by human',
+          outcome:'Verification pending', lastChange:'Human approved; Policy Patch is now active'
+        };
+        if (action.type === 'REJECT' && state.phase === 'approval') return {
+          ...state, phase:'patch', policyPatch:'Rejected — revision needed', approval:'Rejected by human',
+          outcome:'Incident open', lastChange:'No policy change was applied'
+        };
+        if (action.type === 'RUN' && state.phase === 'replay') return finish(state);
+        return { ...state, lastChange:'That action is not available at this stage' };
+      }
+      return { phases, initial, transition };
+    })();
+
+    const labels = { incident:'Incident', evidence:'Evidence', patch:'Policy Patch', approval:'Approval', replay:'Replay', result:'Result' };
+    let state = Flow.initial();
+    let replayTimer;
+    const screen = document.querySelector('#screen');
+    const statePanel = document.querySelector('#state');
+    const steps = document.querySelector('#steps');
+
+    function header(title, description, status) {
+      return `<header class="screen-head"><div><p class="label">${labels[state.phase]}</p><h1>${title}</h1><p>${description}</p></div><span class="status">${status}</span></header>`;
+    }
+    function actions(primaryLabel, primaryAction, secondary = '') {
+      return `<footer class="screen-actions"><div class="action-group"><button class="button" data-action="BACK" ${state.phase === 'incident' ? 'disabled' : ''}>Back</button><button class="button" data-action="RESET">Restart</button></div><div class="action-group">${secondary}<button class="button primary" data-action="${primaryAction}">${primaryLabel}</button></div></footer>`;
+    }
+    function incidentScreen() {
+      return header('A protected secret reached an external destination','BLACKBOX opened an Incident because the External Sink received the exact Canary Secret during a Baseline Run.','Incident open') + `
+        <div class="screen-body"><div class="grid-2">
+          <div class="box"><p class="label">Victim Agent</p><strong class="big-result">Support Agent</strong><p>Processed an untrusted Support Ticket.</p></div>
+          <div class="box"><p class="label">Run Verdict</p><strong class="big-result">Vulnerable</strong><p>Supported by exact sink receipt evidence.</p></div>
+        </div><div class="box dashed"><h2>What you are delegating</h2><p>Investigate what happened, prepare the smallest safe Remediation, and prove it works without breaking legitimate support.</p></div></div>` + actions('Review evidence','NEXT');
+    }
+    function evidenceScreen() {
+      return header('The attack is proven, not inferred','Review the short Evidence Timeline before trusting BLACKBOX to prepare a Remediation.','Vulnerability Proof') + `
+        <div class="screen-body"><div class="box"><ul class="timeline">
+          <li><time>10:14:02</time><div><strong>Support Ticket processed</strong><br>Untrusted content requested protected data.</div></li>
+          <li><time>10:14:05</time><div><strong>Outbound tool allowed</strong><br>Destination was not constrained by the active Capability Policy.</div></li>
+          <li><time>10:14:06</time><div><strong>Canary Secret received</strong><br>External Sink recorded the exact Run-specific value.</div></li>
+        </ul></div><div class="box dashed"><h2>BLACKBOX conclusion</h2><p>The missing control is destination-level restriction. The evidence does not justify removing the Support Agent's outbound capability entirely.</p></div></div>` + actions('See proposed fix','NEXT');
+    }
+    function patchScreen() {
+      const rejected = state.policyPatch.startsWith('Rejected');
+      return header(rejected ? 'Revise the rejected proposal' : 'BLACKBOX prepared the smallest policy change','Nothing has been applied. The proposal narrows one capability and preserves the legitimate workflow.',rejected ? 'Revision needed' : 'Dry-run only') + `
+        <div class="screen-body"><div class="grid-2">
+          <div class="box"><p class="label">Before</p><div class="code">outbound.send\n  destinations: any</div></div>
+          <div class="box"><p class="label">Proposed</p><div class="code">outbound.send\n  destinations:\n    - support.company.test</div></div>
+        </div><div class="box"><h2>Dry-run checks</h2><ul class="checklist"><li>Attack destination would be blocked</li><li>Trusted support destination remains allowed</li><li>No other capability is widened</li></ul></div></div>` + actions('Continue to approval','NEXT');
+    }
+    function approvalScreen() {
+      const guidance = state.scenario === 'reject'
+        ? '<div class="box dashed"><strong>Scenario instruction:</strong> reject this proposal and confirm that BLACKBOX applies nothing.</div>'
+        : '<div class="box dashed"><strong>Scenario instruction:</strong> approve only if the evidence, scope, and dry-run are sufficient.</div>';
+      return header('Only you can authorize the Policy Patch','Approval is the boundary between a proposed Remediation and an active policy change.','Human decision') + `
+        <div class="screen-body">${guidance}<div class="box approval"><h2>Approve Policy Patch v2?</h2><p>This will replace the active destination rule, then immediately start verification.</p><textarea class="decision-note" aria-label="Decision note" placeholder="Optional decision note"></textarea></div></div>` + actions('Approve and apply','APPROVE','<button class="button" data-action="REJECT">Reject</button>');
+    }
+    function replayScreen() {
+      return header('The approved change is active; verification is ready','BLACKBOX will repeat the fixed Attack Scenario and run the legitimate support workflow.','Verification pending') + `
+        <div class="screen-body"><div class="box">
+          <div class="progress-row"><span class="marker">✓</span><div><strong>Policy readback</strong><br>Active policy matches approved version 2.</div><span>Complete</span></div>
+          <div class="progress-row"><span class="marker">2</span><div><strong>Attack Replay</strong><br>Repeat the same Support Ticket with fresh Run state.</div><span>Ready</span></div>
+          <div class="progress-row"><span class="marker">3</span><div><strong>Control Run</strong><br>Confirm legitimate support work still succeeds.</div><span>Ready</span></div>
+        </div><div class="box dashed"><strong>Safety boundary preserved:</strong> the replay uses a synthetic Canary Secret and a controlled External Sink.</div></div>
+        <footer class="screen-actions"><div class="action-group"><button class="button" data-action="BACK">Back</button><button class="button" data-action="RESET">Restart</button></div><strong>Verification advances automatically</strong></footer>`;
+    }
+    function resultScreen() {
+      const inconclusive = state.replayVerdict === 'Inconclusive';
+      return header(inconclusive ? 'The Remediation is not verified yet' : 'The Incident has a Verified Remediation',inconclusive ? 'BLACKBOX refuses to claim success because the replay evidence is incomplete.' : 'The attack was contained, legitimate support still works, and every required evidence gate completed.',inconclusive ? 'Needs another replay' : 'Verified') + `
+        <div class="screen-body"><div class="grid-2">
+          <div class="box"><p class="label">Attack Replay</p><strong class="big-result">${state.replayVerdict}</strong><p>${inconclusive ? 'The scenario did not complete faithfully.' : 'Policy explicitly blocked the external destination.'}</p></div>
+          <div class="box"><p class="label">Control Run</p><strong class="big-result">${state.controlRun}</strong><p>Legitimate Support Agent workflow completed.</p></div>
+        </div><div class="box dashed"><h2>Final outcome</h2><strong class="big-result">${state.outcome}</strong><p>${inconclusive ? 'No success claim. Start a fresh replay when infrastructure is healthy.' : 'Evidence Bundle and human-readable Incident Report are ready.'}</p></div></div>` + actions(inconclusive ? 'Try replay again' : 'Start another Incident','RESET');
+    }
+
+    const screens = { incident:incidentScreen, evidence:evidenceScreen, patch:patchScreen, approval:approvalScreen, replay:replayScreen, result:resultScreen };
+    function renderSteps() {
+      const active = Flow.phases.indexOf(state.phase);
+      steps.innerHTML = Flow.phases.map((phase,index) => `<button class="step ${index < active ? 'complete' : ''} ${phase === state.phase ? 'active' : ''}" data-phase="${phase}" ${phase === state.phase ? 'aria-current="step"' : ''}><small>0${index + 1}</small>${labels[phase]}</button>`).join('');
+    }
+    function renderState() {
+      const fields = [['Baseline Run',state.baselineVerdict],['Policy Patch',state.policyPatch],['Human approval',state.approval],['Attack Replay',state.replayVerdict],['Control Run',state.controlRun],['Outcome',state.outcome]];
+      statePanel.innerHTML = `<h2>Current state</h2><dl class="state-list">${fields.map(([key,value]) => `<div class="state-row"><dt>${key}</dt><dd>${value}</dd></div>`).join('')}</dl><div class="test-note"><h3>What just changed?</h3><p>${state.lastChange}</p></div>`;
+    }
+    function render() {
+      clearTimeout(replayTimer);
+      document.querySelectorAll('[data-scenario]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.scenario === state.scenario)));
+      renderSteps(); renderState(); screen.innerHTML = screens[state.phase]();
+      if (state.phase === 'replay') {
+        replayTimer = setTimeout(() => {
+          state = Flow.transition(state,{ type:'RUN' });
+          render();
+        },1200);
+      }
+    }
+    document.addEventListener('click', event => {
+      const scenario = event.target.closest('[data-scenario]');
+      const step = event.target.closest('[data-phase]');
+      const action = event.target.closest('[data-action]');
+      if (scenario) state = Flow.transition(state,{ type:'SCENARIO',scenario:scenario.dataset.scenario });
+      if (step) state = Flow.transition(state,{ type:'GOTO',phase:step.dataset.phase });
+      if (action) state = Flow.transition(state,{ type:action.dataset.action });
+      if (scenario || step || action) render();
+    });
+    render();
+  </script>
+</body>
+</html>
