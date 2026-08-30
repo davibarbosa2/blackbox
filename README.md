@@ -1,18 +1,80 @@
 # BLACKBOX
 
-This repository contains the executable BLACKBOX tracer bullet. It can verify
-the TrueForge–Daytona runtime and produce Vulnerability Proof for the canonical
-Support Agent Incident with a finalized, machine-readable Evidence Bundle.
+BLACKBOX investigates one compromised AI-agent Incident, prepares a
+least-privilege Remediation for human approval, and verifies the result by
+replaying the same attack and a legitimate control workflow.
 
-## Requirements
+The canonical Victim Agent is a Support Agent processing a synthetic,
+untrusted Support Ticket. The ticket leads it to read a run-scoped Canary
+Secret and send it to a controlled External Sink. BLACKBOX calls the Baseline
+Run `VULNERABLE` only when that sink independently receives the exact Canary
+Secret. After approval, an equivalent Attack Replay must reach an explicit
+policy block with no matching receipt, and a Control Run must still reach the
+Trusted Destination, before the Remediation becomes `VERIFIED`.
 
-- Node.js `24.18.0` (also pinned in `.nvmrc`)
-- pnpm `11.16.0` (also pinned in `package.json`)
-- Valid OpenRouter and Daytona API credentials
+This is a narrow, evidence-backed containment demonstration. It does not claim
+to prevent prompt injection, secure arbitrary agents, or replace a security
+operations platform.
 
-From a clean checkout:
+## Architecture and trust boundaries
+
+```text
+Browser Mission Control
+        |
+        | product HTTP only
+        v
+BLACKBOX Node.js process
+  |-- Incident coordinator
+  |-- Capability Policy -------- authorizes protected reads and destinations
+  |-- Scenario MCP tools ------- synthetic Support Ticket and documents
+  |-- controlled External Sink - independently records outbound receipts
+  |-- SQLite Evidence Ledger --- computes verdicts and bundle hashes
+  |
+  | TypeScript SDK + persisted event reconciliation
+  v
+TrueForge 0.1.4 sibling process
+  |-- Support Agent ------------ Scenario MCP tools only
+  |-- Investigator ------------- evidence/policy tools + two subagents
+  `-- Daytona Code Mode -------- isolated analysis execution
+
+OpenRouter --------------------- configurable tool-capable model
+Daytona ------------------------ external sandbox provider
+```
+
+The model can choose tools and propose a patch, but it cannot grant itself
+authority. Capability Policy enforces the outbound decision outside model
+reasoning. `apply_policy_patch` is the only approval-gated action, and approval
+resumes the exact persisted TrueForge action the operator reviewed. The
+Evidence Ledger—not model text, UI state, or operational logs—finalizes Run
+Verdicts and content-addressed Evidence Bundles.
+
+All scenario data is synthetic. The sink is local and controlled by BLACKBOX.
+Provider credentials remain in an ignored `.env`; Daytona receives neither the
+OpenRouter key nor BLACKBOX MCP credentials.
+
+See [How BLACKBOX uses TrueForge](docs/trueforge.md) for the short submission
+write-up and [AI assistance disclosure](AI_ASSISTANCE.md) for development
+provenance.
+
+## Prerequisites
+
+- Git.
+- Node.js `24.18.0` (pinned in `.nvmrc`).
+- pnpm `11.16.0` (pinned in `package.json`).
+- An [OpenRouter](https://openrouter.ai/) API key with access to a model that
+  supports the required tool-calling path.
+- A [Daytona](https://www.daytona.io/) API key with permission to create and
+  execute sandboxes.
+- A supported desktop browser for Mission Control.
+
+BLACKBOX starts the pinned standalone TrueForge dependency itself. A separate
+TrueForge installation is not required.
+
+## Clean-clone setup
 
 ```bash
+git clone https://github.com/davibarbosa2/blackbox.git
+cd blackbox
 nvm install
 nvm use
 corepack enable
@@ -21,222 +83,177 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Fill in `.env`. `OPENROUTER_MODEL_ID` selects the upstream model and is
-required; the validated example uses `google/gemini-3.7-flash`. The
-corresponding TrueForge model name is
-`openrouter/${TRUEFORGE_MODEL_ALIAS}`.
+Open `.env` locally and fill in:
 
-## Runtime acceptance smoke
-
-Run one command:
-
-```bash
-pnpm smoke:runtime
+```dotenv
+OPENROUTER_API_KEY=<your OpenRouter key>
+DAYTONA_API_KEY=<your Daytona key>
+OPENROUTER_MODEL_ID=google/gemini-3.7-flash
+TRUEFORGE_MODEL_ALIAS=gemini-3.7-flash
 ```
 
-The command:
+`OPENROUTER_MODEL_ID` is the upstream provider model id. It is configurable and
+not hard-coded into the product. `TRUEFORGE_MODEL_ALIAS` is the local alias
+BLACKBOX registers for that id; TrueForge addresses it as
+`openrouter/<alias>`. The shown model is the last validated example, not a
+guarantee of future provider availability. Keep the model and alias unchanged
+from preflight through a Baseline/Replay equivalence set; changing either
+creates a new configuration fingerprint.
 
-1. starts BLACKBOX and TrueForge `0.1.4` and waits for exact health checks;
-2. idempotently upserts and reads back the OpenRouter configuration, then
-   upserts Daytona and waits until it is ready;
-3. creates or updates the saved `blackbox-runtime-smoke` Agent Spec;
-4. proves the selected model can make a required tool call;
-5. observes `sandbox.created`, an `exec` result with exit code `0` and
-   `BLACKBOX_DAYTONA_OK`, matching live and persisted events, and
-   `turn.done.status = done`.
+The remaining `.env.example` defaults bind both local services to loopback and
+store runtime state below ignored `.blackbox/runtime/`. Choose unused ports if
+`3000` or `8790` is already occupied.
 
-Success output contains the requested and returned model fingerprints, sandbox
-event, execution result, terminal turn state, and the local evidence path. It
-does not print credentials. Evidence and TrueForge state persist under
-`.blackbox/runtime/`, which is ignored by Git.
-
-The command refuses occupied BLACKBOX or TrueForge ports and never attaches to
-or stops a process it did not start. `Ctrl-C` cancels an active smoke, records
-that cancellation, stops the owned services, and exits. Normal completion uses
-the same shutdown path. Daytona sandboxes are configured to auto-stop after 5
-minutes and auto-delete after 2 hours.
-
-## Baseline Vulnerability Proof
-
-Run the real-runtime acceptance through the product HTTP boundary:
-
-```bash
-pnpm accept:baseline
-```
-
-The command starts BLACKBOX and pinned TrueForge, then calls
-`POST /api/incidents`. BLACKBOX creates an isolated Baseline Run with a unique
-synthetic Canary Secret, configures the saved `blackbox-support-agent` and the
-remote `blackbox-scenario` MCP connector, and lets TrueForge drive this exact
-tool sequence:
-
-1. `get_support_ticket`
-2. `search_internal_documents`
-3. `read_internal_document`
-4. `send_external_message`
-
-The final tool is evaluated by Capability Policy v1 and makes a real HTTP
-request to BLACKBOX's independently recording External Sink route. The command
-passes only when the Evidence Ledger correlates TrueForge tool calls and
-responses, MCP transaction records, the policy decision, and an exact
-run-scoped sink receipt into a complete `VULNERABLE` Evidence Bundle. Missing
-or mismatched evidence produces `INCONCLUSIVE` and fails the command.
-
-The command prints configuration fingerprints and the stable bundle hash, but
-not credentials or the Canary Secret. Durable Evidence Bundles and BLACKBOX's
-SQLite ledger are stored below `.blackbox/runtime/`, which is ignored by Git.
-
-## Incident investigation and Policy Patch proposal
-
-Run the real TrueForge–Daytona investigation through the product HTTP boundary:
-
-```bash
-pnpm accept:investigation
-```
-
-After the Baseline Evidence Bundle proves `VULNERABLE`, BLACKBOX automatically
-starts the investigator. The TrueForge agent delegates evidence and policy
-analysis to exactly two focused subagents, executes an analysis artifact in a
-Daytona sandbox, and proposes the destination-allowlist Policy Patch. BLACKBOX
-accepts only the canonical monotonically restrictive patch and dry-runs it
-without changing effective policy.
-
-Success stops at `AWAITING_APPROVAL` on the literal TrueForge
-`apply_policy_patch` required action. The command prints the durable session,
-turn, action, and call identifiers, but not the Canary Secret. The pending
-decision and exact diff remain available from `GET /api/incidents/:incidentId`
-after a browser or process reconnection.
-
-Operational request and Baseline Run logs are written as NDJSON below
-`.evlog/logs/`. A failed acceptance command prints the Run id, sanitized failure
-cause, missing evidence, and the log location. Search a specific Run with:
-
-```bash
-rg '"runId":"<run-id>"' .evlog/logs
-```
-
-These logs are best-effort operational telemetry. The SQLite Evidence Ledger
-remains the sole source of truth for evidence completeness and verdicts.
-
-## Verified Remediation acceptance
-
-Run the complete approval and verification tracer bullet through the product
-HTTP boundary:
-
-```bash
-pnpm accept:remediation
-```
-
-The command runs the Vulnerable Baseline and TrueForge–Daytona investigation,
-then approves the exact persisted `apply_policy_patch` required action. BLACKBOX
-atomically applies and reads back the reviewed destination allowlist before it
-automatically creates a fresh equivalent Attack Replay and a legitimate Control
-Run.
-
-Success requires three finalized Evidence Bundles: the Baseline Run is `VULNERABLE`,
-the Attack Replay reads the protected document and reaches an explicit policy denial
-with no exact Canary receipt through its observation cutoff, and the Control Run
-delivers its legitimate response to the Trusted Destination. Only then does the
-Remediation become `VERIFIED`. Any readback, replay, control, or finalization
-failure reports `VALIDATION_FAILED`; the restrictive policy remains applied and
-is not automatically rolled back.
-
-## Reliability gate
-
-Before recording the demo, run the resumable real-runtime gate:
-
-```bash
-pnpm accept:reliability
-```
-
-The command first runs the runtime smoke, so the configured OpenRouter model
-must make the required tool call and the TrueForge-to-Daytona path must create a
-sandbox, execute the marker command, reconcile persisted events, and finish its
-turn. It then runs three complete Baseline Run→Attack Replay→Control Run equivalence
-sets through BLACKBOX's HTTP API. Every set receives its own runtime directory,
-SQLite databases, policy state, scenario state, sink state, Run ids, and Canary
-Secrets. A set counts only when all three Evidence Bundles are finalized, the
-Baseline Run is `VULNERABLE`, the equivalent Attack Replay is `PROTECTED` at an explicit
-policy denial with no matching receipt, the Control Run passes, and the
-Remediation is `VERIFIED`.
-
-Progress is written atomically after each accepted set. Re-running the command
-with the same configuration resumes that report. An interrupted, incomplete,
-duplicated, cross-Run, differently fingerprinted, or inconclusive attempt is
-recorded as rejected and never counts toward the three-set sequence. A rejected
-equivalence attempt invalidates the current consecutive sequence; the next run
-starts it again. Changing `OPENROUTER_MODEL_ID` or
-`TRUEFORGE_MODEL_ALIAS` selects a new configuration fingerprint and therefore a
-new reliability set without a code edit.
-
-Success prints a human-readable summary with all three Baseline Run/Attack Replay
-outcome pairs, each Control Run result, Run and bundle ids, configuration fingerprints,
-durations, and rejected attempts. The same data is stored without raw Canary
-Secrets in the machine-readable report at:
-
-```text
-.blackbox/runtime/reliability/<configuration-fingerprint>/result.json
-```
-
-Failure output names the exact rejected gate and the report path. External
-OpenRouter or Daytona availability failures are recorded as preflight failures,
-not as product verdicts.
-
-The deterministic safe-failure matrix runs without OpenRouter or Daytona:
-
-```bash
-pnpm test:reliability-failures
-```
-
-It covers approval denial and stale approval; sink timeout or missing and
-mismatched receipts; model and sandbox failures; Attack Replay non-equivalence and
-missing explicit denial; Control Run failure; evidence-finalization failure;
-and event reconnection, reconciliation, and deduplication. These checks require
-unsupported Baseline Run or Attack Replay evidence to remain `INCONCLUSIVE` and prevent
-`VERIFIED`.
-
-## Mission Control
-
-Build the browser client, start the real BLACKBOX and TrueForge services, and
-open Mission Control with:
+## One-command demo
 
 ```bash
 pnpm demo
 ```
 
-The opening explains the controlled synthetic Support Ticket scenario before
-one start launches the real Incident workflow. Mission Control reconstructs its
-state from BLACKBOX, shows only sanitized durable progress, pauses on the exact
-pending `apply_policy_patch` action, and submits the human approval or denial
-through the product HTTP boundary. After approval, policy readback, equivalent
-Attack Replay, and legitimate Control Run proceed automatically. Containment is
-shown only when all three finalized Evidence Bundles support it.
+This builds Mission Control, starts BLACKBOX and pinned TrueForge, waits for
+their health checks, and opens the local browser. Click **Start Incident**
+once. BLACKBOX then configures OpenRouter and Daytona and:
 
-Refreshing or reconnecting does not create a new Incident or duplicate the
-pending decision. Use `Ctrl-C` in the terminal to stop the owned services.
+1. resets the synthetic scenario and runs the vulnerable Baseline;
+2. starts the TrueForge investigation automatically;
+3. delegates to two focused subagents and executes analysis in Daytona;
+4. pauses on the exact `apply_policy_patch` action;
+5. displays the diff, evidence, base hash, and impact for approval or denial;
+6. after approval, reads the policy back and automatically runs the equivalent
+   Attack Replay and legitimate Control Run;
+7. presents the final Baseline/Replay/Control comparison.
 
-## Configuration
+Do not start a second Incident while the first is running. Refreshing Mission
+Control reconstructs the durable Incident and pending approval without
+duplicating actions.
 
-| Variable | Required | Default |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | yes | — |
-| `OPENROUTER_MODEL_ID` | yes | — |
-| `DAYTONA_API_KEY` | yes | — |
-| `TRUEFORGE_MODEL_ALIAS` | no | `gemini-3.7-flash` |
-| `BLACKBOX_HOST` | no | `127.0.0.1` (loopback only; `localhost` is also accepted) |
-| `BLACKBOX_PORT` | no | `3000` |
-| `TRUEFORGE_HOST` | no | `127.0.0.1` |
-| `TRUEFORGE_PORT` | no | `8790` |
-| `BLACKBOX_RUNTIME_DIR` | no | `.blackbox/runtime` |
+## Expected evidence
 
-## Deterministic checks
+A successful representative flow ends with three finalized, linked Evidence
+Bundles:
 
-These checks use local or in-memory boundaries and do not call OpenRouter or
-Daytona:
+- Baseline Run: `VULNERABLE`, with the exact run-scoped Canary receipt.
+- Attack Replay: `PROTECTED`, with the protected document still read, an
+  explicit unauthorized-destination policy denial, and no matching receipt
+  through the observation cutoff.
+- Control Run: the legitimate response reaches the Trusted Destination.
+
+Only successful policy readback plus all three complete bundles permits
+`VERIFIED`. Missing tool events, mismatched receipts, infrastructure failures,
+non-equivalent replay, or failed control produce `INCONCLUSIVE` or
+`VALIDATION_FAILED`, never inferred success.
+
+Mission Control links to the machine-readable bundles and shows their stable
+hashes. The same durable source of truth lives under
+`.blackbox/runtime/blackbox.sqlite`; TrueForge state and the resumable
+reliability report stay below `.blackbox/runtime/`. `.evlog/logs/` contains
+best-effort operational diagnostics, not verdict evidence. All are ignored by
+Git.
+
+## Preflight and acceptance commands
+
+Before a representative run or recording, verify the selected real-provider
+configuration:
 
 ```bash
+pnpm smoke:runtime
+pnpm accept:reliability
+```
+
+The smoke proves model tool calling, TrueForge session completion, a Daytona
+sandbox, an `exec` result with exit code `0` and `BLACKBOX_DAYTONA_OK`, live and
+persisted event reconciliation, and clean shutdown.
+
+The resumable reliability gate runs the smoke and then requires three
+consecutive complete Baseline → Attack Replay → Control equivalence sets. It
+rejects incomplete, duplicated, differently fingerprinted, or inconclusive
+attempts and writes a credential-free report to:
+
+```text
+.blackbox/runtime/reliability/<configuration-fingerprint>/result.json
+```
+
+Individual real-runtime seams are also available:
+
+```bash
+pnpm accept:baseline
+pnpm accept:investigation
+pnpm accept:remediation
+```
+
+The deterministic safe-failure matrix does not call OpenRouter or Daytona:
+
+```bash
+pnpm test:reliability-failures
+```
+
+## Repository and deterministic checks
+
+Run these before opening a pull request or publishing:
+
+```bash
+pnpm submission:check
 pnpm lint
 pnpm typecheck
 pnpm build
 pnpm test
+git diff --check
 ```
+
+`submission:check` requires the license, disclosure, write-up, and demo
+runbook; rejects tracked or untracked credentials, runtime databases, logs,
+generated build output, and credential-like content; and scans every remote
+branch's history. It intentionally does not read ignored `.env` or runtime
+state. Review the exact commit and GitHub Actions result as a second publication
+gate.
+
+## Troubleshooting
+
+**A required environment variable is missing.** Copy `.env.example` to `.env`
+and set both API keys plus `OPENROUTER_MODEL_ID`. Do not put real values in
+`.env.example`.
+
+**BLACKBOX or TrueForge reports an occupied port.** The launcher refuses to
+attach to or stop a process it did not start. Stop the process you own or set
+unused `BLACKBOX_PORT` and `TRUEFORGE_PORT` values in `.env`, then rerun.
+
+**The model does not call the required tool.** Run `pnpm smoke:runtime`. Select
+an OpenRouter model that currently supports the tool-calling path, update both
+model variables before a new equivalence set, and rerun the full reliability
+gate. Do not reuse evidence from the old fingerprint.
+
+**Daytona is pending or unavailable.** Confirm the key and account can create a
+sandbox, then retry the smoke. Provider failure is a preflight/infrastructure
+failure, not evidence that the Incident is protected.
+
+**A Run is `INCONCLUSIVE` or validation fails.** Read the failure and missing
+evidence shown by the command, then correlate the Run id in operational logs:
+
+```bash
+rg '"runId":"<run-id>"' .evlog/logs
+```
+
+Keep the Evidence Bundle as the verdict source. A restrictive applied policy is
+not automatically rolled back after validation failure.
+
+**The browser does not open.** Copy the `blackbox.ready` URL from the terminal
+into a browser. The service is loopback-only by design.
+
+## Clean shutdown
+
+In the terminal that runs `pnpm demo` or an acceptance command, press
+`Ctrl-C` once and wait for the command to exit. BLACKBOX propagates shutdown to
+the TrueForge process it started, closes its own HTTP and SQLite resources, and
+prints `{"event":"blackbox.stopped"}` for the demo entrypoint. Do not close the
+terminal or kill child processes first.
+
+If startup failed because a port belonged to another process, BLACKBOX leaves
+that process untouched. Daytona sandboxes are configured to auto-stop after
+five minutes and auto-delete after two hours even if a local connection is
+lost.
+
+## License
+
+BLACKBOX is available under the [MIT License](LICENSE). Third-party notices for
+the TrueForge logo assets are in
+[mission-control/assets/THIRD_PARTY_NOTICES.md](mission-control/assets/THIRD_PARTY_NOTICES.md).
