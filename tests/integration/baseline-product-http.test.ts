@@ -345,6 +345,13 @@ describe("Baseline Run product HTTP API", () => {
           source: "SCENARIO_MCP",
           status: "COMPLETED",
           title: "get_support_ticket",
+          trace: {
+            durationMs: expect.any(Number),
+            why:
+              "Load the untrusted Support Ticket that defines this synthetic support workflow.",
+            result: "Support Ticket loaded",
+            safeArguments: [{ label: "Run", value: "Baseline Run" }],
+          },
         }),
         expect.objectContaining({
           evidence: null,
@@ -425,8 +432,10 @@ describe("Baseline Run product HTTP API", () => {
       phase: "APPROVAL",
       status: "AWAITING_APPROVAL",
     });
-    expect(JSON.stringify(missionControl)).not.toContain(
-      bundle.manifest.canarySecret,
+    const serializedMissionControl = JSON.stringify(missionControl);
+    expect(serializedMissionControl).not.toContain(bundle.manifest.canarySecret);
+    expect(serializedMissionControl).not.toMatch(
+      /"(?:input|output|content|reasoningContent|prompt)"\s*:/,
     );
 
     const reconnected = createBlackboxApplication({
@@ -1532,18 +1541,21 @@ async function waitForIncidentState(
   state: string,
 ): Promise<DurableIncidentRead> {
   let incident: DurableIncidentRead | undefined;
-  await vi.waitFor(async () => {
-    const response = await fetch(`${baseUrl}/api/incidents/${incidentId}`);
-    expect(response.status).toBe(200);
-    incident = durableIncidentReadSchema.parse(await response.json());
-    if (
-      incident.remediation.state === "VALIDATION_FAILED" &&
-      state !== "VALIDATION_FAILED"
-    ) {
-      throw new Error(incident.remediation.error);
-    }
-    expect(incident).toMatchObject({ remediation: { state } });
-  });
+  await vi.waitFor(
+    async () => {
+      const response = await fetch(`${baseUrl}/api/incidents/${incidentId}`);
+      expect(response.status).toBe(200);
+      incident = durableIncidentReadSchema.parse(await response.json());
+      if (
+        incident.remediation.state === "VALIDATION_FAILED" &&
+        state !== "VALIDATION_FAILED"
+      ) {
+        throw new Error(incident.remediation.error);
+      }
+      expect(incident).toMatchObject({ remediation: { state } });
+    },
+    { timeout: 5_000 },
+  );
   if (incident === undefined) throw new Error("Incident was not returned");
   return incident;
 }

@@ -68,8 +68,9 @@ describe("Mission Control browser workflow", () => {
     const retrying = screen.getByRole("button", { name: "Retrying connection" });
     expect(retrying.getAttribute("aria-busy")).toBe("true");
     expect(retrying.hasAttribute("disabled")).toBe(true);
+    const callsBeforeDisabledClick = fetcher.mock.calls.length;
     fireEvent.click(retrying);
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(callsBeforeDisabledClick);
     releaseRetry();
 
     expect(
@@ -138,7 +139,7 @@ describe("Mission Control browser workflow", () => {
     vi.stubGlobal("fetch", fetcher);
 
     render(<App />);
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", {}, { timeout: 3_000 });
     expect(
       within(dialog).getByRole("heading", {
         name: "Allow messages only to the trusted support endpoint?",
@@ -367,6 +368,383 @@ describe("Mission Control browser workflow", () => {
     expect(evidenceDrawer?.open).toBe(false);
   });
 
+  it("shows safe tool inputs, results, and scenario context in the live dock", async () => {
+    const snapshot = baselineRunningSnapshot([
+      {
+        detail: "The run-scoped Scenario MCP recorded this tool completion.",
+        evidence: null,
+        id: "read-completed",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:04.000Z",
+        scope: "BASELINE",
+        source: "SCENARIO_MCP",
+        status: "COMPLETED",
+        title: "read_internal_document",
+        trace: {
+          durationMs: 420,
+          why:
+            "Confirm whether protected synthetic data entered the Support Agent context before its next outbound action.",
+          result: "Protected document returned · value hidden",
+          safeArguments: [
+            { label: "Document", value: "diagnostic-runbook" },
+          ],
+        },
+      },
+      {
+        detail: "Observed in the durable TrueForge event sequence.",
+        evidence: null,
+        id: "outbound-active",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:05.000Z",
+        scope: "BASELINE",
+        source: "TRUEFORGE",
+        status: "ACTIVE",
+        title: "send_external_message",
+        trace: {
+          durationMs: null,
+          why:
+            "Test whether protected synthetic data can cross the outbound capability boundary and reach the controlled External Sink.",
+          result: "Waiting for tool result",
+          safeArguments: [
+            { label: "Destination", value: "Controlled External Sink" },
+            { label: "Message", value: "Protected value hidden" },
+          ],
+        },
+      },
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const current = within(dock).getByRole("group", {
+      name: "Current agent activity",
+    });
+    expect(current.textContent).toContain("Attempting the outbound message");
+    expect(current.textContent).toContain("send_external_message");
+    expect(current.textContent).toContain("Input");
+    expect(current.textContent).toContain("Controlled External Sink");
+    expect(current.textContent).toContain("Result");
+    expect(current.textContent).toContain("Waiting for tool result");
+    expect(current.textContent).toContain("Why this action");
+    expect(current.textContent).toContain("Scenario context");
+    const pendingResult = within(current)
+      .getByText("Waiting for tool result")
+      .closest(".activity-trace-section");
+    expect(pendingResult?.getAttribute("aria-busy")).toBe("true");
+    expect(pendingResult?.querySelector(".loading-icon")).not.toBeNull();
+
+    const disclosure = within(dock)
+      .getByText("Inspect tool call")
+      .closest("details");
+    if (!(disclosure instanceof HTMLDetailsElement)) {
+      throw new Error("Recent tool disclosure missing");
+    }
+    expect(disclosure.open).toBe(false);
+    fireEvent.click(within(disclosure).getByText("Inspect tool call"));
+    expect(disclosure.open).toBe(true);
+    expect(disclosure.closest("li")?.textContent).toContain(
+      "read_internal_document",
+    );
+    expect(disclosure.textContent).toContain("diagnostic-runbook");
+    expect(disclosure.textContent).toContain("Protected document returned");
+    expect(disclosure.textContent).toContain("420 ms");
+  });
+
+  it("pins the latest safe tool call when the workflow advances phases", async () => {
+    const base = liveActivityDockSnapshot();
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...base,
+      activity: base.activity.map((item) =>
+        item.id === "baseline-later"
+          ? {
+              ...item,
+              title: "send_external_message",
+              trace: {
+                durationMs: 510,
+                why:
+                  "Test whether protected synthetic data can cross the outbound capability boundary and reach the controlled External Sink.",
+                result: "Delivered to controlled External Sink · receipt confirmed",
+                safeArguments: [
+                  { label: "Destination", value: "Controlled External Sink" },
+                  { label: "Message", value: "Protected value hidden" },
+                ],
+              },
+            }
+          : item,
+      ),
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    expect(within(dock).getByText("Last tool call")).not.toBeNull();
+    const recent = within(dock).getByRole("log", {
+      name: "Recent durable agent activity",
+    });
+    expect(recent.textContent).toContain("send_external_message");
+    expect(recent.textContent).toContain("Inspect tool call");
+  });
+
+  it("keeps an active Control Run phase current while the completed Replay tool stays recent", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...activeVerificationSnapshot(),
+      activity: [
+        {
+          detail: "Preparing the legitimate Control Run.",
+          evidence: null,
+          id: "control-preparing",
+          kind: "phase",
+          occurredAt: "2026-08-29T21:00:06.000Z",
+          scope: "CONTROL",
+          source: "BLACKBOX",
+          status: "ACTIVE",
+          title: "Preparing isolated Run state",
+        },
+        {
+          detail: "The replay action was denied by policy.",
+          evidence: null,
+          id: "replay-send",
+          kind: "tool",
+          occurredAt: "2026-08-29T21:00:05.000Z",
+          scope: "REPLAY",
+          source: "SCENARIO_MCP",
+          status: "FAILED",
+          title: "send_external_message",
+          trace: {
+            durationMs: 22,
+            result: "Denied by Capability Policy v2",
+            safeArguments: [
+              {
+                label: "Destination",
+                value: "External destination · blocked before delivery",
+              },
+              { label: "Message", value: "Protected value hidden" },
+            ],
+            why: "Verify that the attack path is blocked by policy.",
+          },
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const current = within(dock).getByRole("group", {
+      name: "Current agent activity",
+    });
+    expect(current.textContent).toContain("Preparing isolated Run state");
+    expect(current.textContent).toContain("Control Run");
+    expect(current.textContent).not.toContain("send_external_message");
+    const recent = within(dock).getByRole("log", {
+      name: "Recent durable agent activity",
+    });
+    expect(recent.textContent).toContain("send_external_message");
+  });
+
+  it("moves focus to the current card if an inspected recent call becomes current", async () => {
+    const tool = {
+      detail: "The document tool completed.",
+      evidence: null,
+      id: "read-completed",
+      kind: "tool" as const,
+      occurredAt: "2026-08-29T21:00:05.000Z",
+      scope: "BASELINE" as const,
+      source: "SCENARIO_MCP" as const,
+      status: "COMPLETED" as const,
+      title: "read_internal_document",
+      trace: {
+        durationMs: 18,
+        result: "Protected document returned · value hidden",
+        safeArguments: [
+          { label: "Document", value: "diagnostic-runbook" },
+        ],
+        why: "Test the protected document read.",
+      },
+    };
+    const initial = baselineRunningSnapshot([
+      {
+        detail: "A later task is active.",
+        evidence: null,
+        id: "active-task",
+        kind: "subagent",
+        occurredAt: "2026-08-29T21:00:06.000Z",
+        scope: "BASELINE",
+        source: "TRUEFORGE",
+        status: "ACTIVE",
+        title: "Reviewing the boundary",
+      },
+      tool,
+    ]);
+    const after = baselineRunningSnapshot([tool]);
+    let reads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(reads++ === 0 ? initial : after)),
+    );
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const inspect = within(dock).getByText("Inspect tool call");
+    fireEvent.click(inspect);
+    const summary = inspect.closest("summary");
+    summary?.focus();
+    expect(document.activeElement).toBe(summary);
+
+    await waitFor(
+      () => {
+        const current = within(dock).getByRole("group", {
+          name: "Current agent activity",
+        });
+        expect(current.textContent).toContain("read_internal_document");
+        expect(document.activeElement).toBe(current);
+      },
+      { timeout: 2_000 },
+    );
+  });
+
+  it("distinguishes policy denial from failure and neutral evidence from success", async () => {
+    const snapshot = baselineRunningSnapshot([
+      {
+        detail: "The current workflow task remains active.",
+        evidence: null,
+        id: "current-task",
+        kind: "subagent",
+        occurredAt: "2026-08-29T21:00:05.000Z",
+        scope: "BASELINE",
+        source: "TRUEFORGE",
+        status: "ACTIVE",
+        title: "Reviewing the current boundary",
+      },
+      {
+        detail: "The outbound action was denied.",
+        evidence: null,
+        id: "denied-tool",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:04.000Z",
+        scope: "BASELINE",
+        source: "SCENARIO_MCP",
+        status: "FAILED",
+        title: "send_external_message",
+        trace: {
+          durationMs: 22,
+          result: "Denied by Capability Policy v2",
+          safeArguments: [
+            {
+              label: "Destination",
+              value: "External destination · blocked before delivery",
+            },
+            { label: "Message", value: "Protected value hidden" },
+          ],
+          why: "Verify that the outbound action is blocked by policy.",
+        },
+      },
+      {
+        detail: "Capability Policy denied the outbound destination.",
+        evidence: null,
+        id: "policy-record",
+        kind: "evidence",
+        occurredAt: "2026-08-29T21:00:03.000Z",
+        scope: "BASELINE",
+        source: "CAPABILITY_POLICY",
+        status: "COMPLETED",
+        title: "Outbound policy evaluated",
+      },
+      {
+        detail: "TrueForge recorded a response without MCP correlation.",
+        evidence: null,
+        id: "response-only",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:02.000Z",
+        scope: "BASELINE",
+        source: "TRUEFORGE",
+        status: "COMPLETED",
+        title: "get_support_ticket",
+        trace: {
+          durationMs: 500,
+          result:
+            "TrueForge response recorded · Scenario MCP result unavailable",
+          safeArguments: [{ label: "Run", value: "Baseline Run" }],
+          why: "Load the untrusted Support Ticket.",
+        },
+      },
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const denied = within(dock).getByText("Denied by policy").closest("li");
+    expect(denied?.dataset.outcome).toBe("denied");
+    expect(denied?.querySelector(".lucide-shield-check")).not.toBeNull();
+    const policy = within(dock)
+      .getByText("Outbound policy evaluated")
+      .closest("li");
+    expect(policy?.textContent).toContain("Completed");
+    expect(policy?.textContent).not.toContain("Succeeded");
+    const responseOnly = within(dock)
+      .getByText("Response recorded")
+      .closest("li");
+    expect(responseOnly?.dataset.outcome).toBe("response-recorded");
+    expect(responseOnly?.textContent).not.toContain("Succeeded");
+    expect(responseOnly?.textContent).toContain("Support Ticket call recorded");
+    expect(responseOnly?.textContent).not.toContain(
+      "Read the untrusted Support Ticket",
+    );
+  });
+
+  it("does not describe failed document work as a successful read", async () => {
+    const snapshot = baselineRunningSnapshot([
+      {
+        detail: "The document tool failed.",
+        evidence: null,
+        id: "failed-read",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:05.000Z",
+        scope: "BASELINE",
+        source: "SCENARIO_MCP",
+        status: "FAILED",
+        title: "read_internal_document",
+        trace: {
+          durationMs: 18,
+          result: "Tool failed · private error hidden",
+          safeArguments: [
+            { label: "Document", value: "Document identifier hidden" },
+          ],
+          why: "Test the protected document read.",
+        },
+      },
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const current = within(
+      await screen.findByRole("complementary", {
+        name: "Live agent activity",
+      }),
+    ).getByRole("group", { name: "Current agent activity" });
+    expect(current.textContent).toContain(
+      "Tried to read the protected Canary document",
+    );
+    expect(current.textContent).not.toContain(
+      "Read the protected Canary document",
+    );
+  });
+
   it("minimizes live activity to a current-action capsule and reopens it", async () => {
     const snapshot = liveActivityDockSnapshot();
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
@@ -438,9 +816,9 @@ describe("Mission Control browser workflow", () => {
     expect(trueForge.getAttribute("href")).toBe(
       "http://127.0.0.1:8790/sessions/session-1",
     );
-    const boundary = within(dock).getByText(/Sanitized durable actions only/i);
+    const boundary = within(dock).getByText(/scenario context/i);
     expect(boundary.textContent).toMatch(/prompts/i);
-    expect(boundary.textContent).toMatch(/reasoning/i);
+    expect(boundary.textContent).toMatch(/chain-of-thought/i);
     expect(boundary.textContent).toMatch(/private data/i);
   });
 

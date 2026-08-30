@@ -80,6 +80,8 @@ const baselineToolCallSchema = z.object({
   ]),
 });
 
+export type BaselineToolCall = z.infer<typeof baselineToolCallSchema>;
+
 export const baselineExecutionEvidenceSchema = z.object({
   mcpInitialization: z.object({
     eventId: z.string(),
@@ -270,6 +272,7 @@ export type PolicyActionResolution = z.infer<
 
 export interface BaselineExecutionRequest {
   mcpAuthorization: string;
+  onToolCall?: (call: BaselineToolCall) => void;
   runId: string;
   signal?: AbortSignal;
 }

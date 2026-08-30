@@ -5,6 +5,20 @@ const evidenceReferenceSchema = z.strictObject({
   url: z.string(),
 });
 
+const activityTraceSchema = z.strictObject({
+  durationMs: z.number().int().nonnegative().nullable(),
+  result: z.string().min(1),
+  safeArguments: z
+    .array(
+      z.strictObject({
+        label: z.string().min(1),
+        value: z.string().min(1),
+      }),
+    )
+    .max(3),
+  why: z.string().min(1),
+});
+
 const activitySchema = z.strictObject({
   detail: z.string().nullable(),
   evidence: evidenceReferenceSchema.nullable(),
@@ -36,6 +50,7 @@ const activitySchema = z.strictObject({
   ]),
   status: z.enum(["ACTIVE", "COMPLETED", "FAILED"]),
   title: z.string(),
+  trace: activityTraceSchema.optional(),
 });
 
 const baselineSummarySchema = z.strictObject({

@@ -44,6 +44,7 @@ import {
 } from "../trueforge/runtime.js";
 import type {
   BaselineExecutionEvidence,
+  BaselineToolCall,
   TrueForgeRuntime,
 } from "../trueforge/runtime.js";
 
@@ -660,6 +661,9 @@ export class IncidentCoordinator {
     try {
       const evidence = await execute({
         mcpAuthorization,
+        onToolCall: (call) => {
+          this.#ledger.append([toolCalledRecord(manifest.runId, call)]);
+        },
         runId: manifest.runId,
         signal,
       });
@@ -708,6 +712,9 @@ export class IncidentCoordinator {
       try {
         evidence = await this.#runtime.executeBaseline({
           mcpAuthorization,
+          onToolCall: (call) => {
+            this.#ledger.append([toolCalledRecord(runId, call)]);
+          },
           runId,
           signal,
         });
@@ -1098,18 +1105,7 @@ function baselineEvidenceRecords(
       source: "trueforge",
       type: "mcp.initialized",
     },
-    ...evidence.toolCalls.map(
-      (call): EvidenceRecord => ({
-        arguments: call.arguments,
-        id: call.eventId,
-        occurredAt: call.occurredAt,
-        runId,
-        source: "trueforge",
-        toolCallId: call.toolCallId,
-        toolName: call.toolName,
-        type: "tool.called",
-      }),
-    ),
+    ...evidence.toolCalls.map((call) => toolCalledRecord(runId, call)),
     ...evidence.toolResponses.map(
       (response): EvidenceRecord => ({
         content: response.content,
@@ -1132,6 +1128,22 @@ function baselineEvidenceRecords(
       type: "turn.completed",
     },
   ];
+}
+
+function toolCalledRecord(
+  runId: string,
+  call: BaselineToolCall,
+): Extract<EvidenceRecord, { type: "tool.called" }> {
+  return {
+    arguments: call.arguments,
+    id: call.eventId,
+    occurredAt: call.occurredAt,
+    runId,
+    source: "trueforge",
+    toolCallId: call.toolCallId,
+    toolName: call.toolName,
+    type: "tool.called",
+  };
 }
 
 function safelyObserve(operation: () => void): void {

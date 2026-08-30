@@ -1,4 +1,9 @@
-import { TrueForge, type TrueForgeApi } from "@truefoundry/trueforge-sdk";
+import {
+  isEventDelta,
+  mergeEventDelta,
+  TrueForge,
+  type TrueForgeApi,
+} from "@truefoundry/trueforge-sdk";
 
 import type { EvidenceRecord } from "../evidence/ledger.js";
 import {
@@ -6,7 +11,10 @@ import {
   SCENARIO_MCP_NAME,
 } from "../scenario/definition.js";
 import { reconcileTurnEvents } from "./reconcile-events.js";
-import type { BaselineExecutionEvidence } from "./runtime.js";
+import type {
+  BaselineExecutionEvidence,
+  BaselineToolCall,
+} from "./runtime.js";
 
 interface TrueForgeRequestOptions {
   abortSignal?: AbortSignal;
@@ -19,6 +27,7 @@ export async function executeTrueForgeBaseline(
   agentName: string,
   runId: string,
   signal?: AbortSignal,
+  onToolCall?: (call: BaselineToolCall) => void,
 ): Promise<BaselineExecutionEvidence> {
   const session = await client.sessions.create(
     { agent: { name: agentName } },
@@ -38,7 +47,35 @@ export async function executeTrueForgeBaseline(
     requestOptions(signal, 10 * 60),
   );
   const liveEvents: TrueForgeApi.TurnStreamingEvent[] = [];
-  for await (const event of stream) liveEvents.push(event);
+  const liveMessagesById = new Map<string, TrueForgeApi.ModelMessageEvent>();
+  const toolCalls: BaselineToolCall[] = [];
+  const observedToolCallEventIds = new Set<string>();
+  for await (const event of stream) {
+    liveEvents.push(event);
+    let liveMessage: TrueForgeApi.ModelMessageEvent;
+    if (event.type === "model.message") {
+      liveMessage = structuredClone(event);
+      liveMessagesById.set(event.id, liveMessage);
+    } else if (isEventDelta(event)) {
+      const base = liveMessagesById.get(event.id);
+      if (base === undefined) {
+        throw new Error(
+          `TrueForge delta ${event.id} arrived without a base model.message`,
+        );
+      }
+      mergeEventDelta(base, event);
+      liveMessage = base;
+    } else {
+      continue;
+    }
+    if (liveMessage.finishReason !== "tool_calls") continue;
+    for (const call of canonicalToolCalls(liveMessage)) {
+      if (observedToolCallEventIds.has(call.eventId)) continue;
+      observedToolCallEventIds.add(call.eventId);
+      toolCalls.push(call);
+      onToolCall?.(call);
+    }
+  }
 
   const turnCreated = liveEvents.find(
     (event): event is TrueForgeApi.TurnCreatedEvent =>
@@ -93,27 +130,14 @@ export async function executeTrueForgeBaseline(
   if (mcpInitialization === undefined) {
     throw new Error("TrueForge did not initialize the BLACKBOX scenario MCP");
   }
-  const toolCalls = persistedEvents.flatMap((event) => {
-    if (event.type !== "model.message") return [];
-    return (event.toolCalls ?? []).flatMap((call) => {
-      if (
-        call.toolInfo.type !== "mcp" ||
-        call.toolInfo.serverName !== SCENARIO_MCP_NAME ||
-        !isCanonicalToolName(call.toolInfo.name)
-      ) {
-        return [];
-      }
-      return [
-        {
-          arguments: call.function.arguments,
-          eventId: `${event.id}:tool:${call.id}`,
-          occurredAt: event.createdAt,
-          toolCallId: call.id,
-          toolName: call.toolInfo.name,
-        },
-      ];
-    });
-  });
+  const persistedToolCalls = persistedEvents.flatMap((event) =>
+    event.type === "model.message" ? canonicalToolCalls(event) : [],
+  );
+  if (!sameToolCalls(toolCalls, persistedToolCalls)) {
+    throw new Error(
+      "TrueForge live canonical tool calls did not match persisted events",
+    );
+  }
   const observedNames = toolCalls.map((call) => call.toolName);
   if (
     observedNames.length !== CANONICAL_TOOL_NAMES.length ||
@@ -158,6 +182,49 @@ export async function executeTrueForgeBaseline(
       turnId: turnCreated.turnId,
     },
   };
+}
+
+function canonicalToolCalls(
+  event: TrueForgeApi.ModelMessageEvent,
+): BaselineToolCall[] {
+  return (event.toolCalls ?? []).flatMap((call) => {
+    if (
+      call.toolInfo.type !== "mcp" ||
+      call.toolInfo.serverName !== SCENARIO_MCP_NAME ||
+      !isCanonicalToolName(call.toolInfo.name)
+    ) {
+      return [];
+    }
+    return [
+      {
+        arguments: call.function.arguments,
+        eventId: `${event.id}:tool:${call.id}`,
+        occurredAt: event.createdAt,
+        toolCallId: call.id,
+        toolName: call.toolInfo.name,
+      },
+    ];
+  });
+}
+
+function sameToolCalls(
+  live: readonly BaselineToolCall[],
+  persisted: readonly BaselineToolCall[],
+): boolean {
+  // TrueForge may persist a different createdAt for the reconciled live event.
+  return (
+    live.length === persisted.length &&
+    live.every((call, index) => {
+      const candidate = persisted[index];
+      return (
+        candidate !== undefined &&
+        call.arguments === candidate.arguments &&
+        call.eventId === candidate.eventId &&
+        call.toolCallId === candidate.toolCallId &&
+        call.toolName === candidate.toolName
+      );
+    })
+  );
 }
 
 type CanonicalToolName = Extract<

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -389,16 +390,55 @@ interface AgentActivityDockProps {
 
 function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
   const capsuleRef = useRef<HTMLButtonElement>(null);
+  const currentCardRef = useRef<HTMLDivElement>(null);
   const minimizeRef = useRef<HTMLButtonElement>(null);
   const focusAfterToggle = useRef<"capsule" | "minimize" | null>(null);
+  const [inspectedActivityId, setInspectedActivityId] = useState<string | null>(
+    null,
+  );
+  const allActivities = sortedActivities(props.snapshot.activity);
   const activities = dockActivities(props.snapshot);
   const current =
+    activities.find(
+      (item) => item.status === "ACTIVE" && item.kind !== "phase",
+    ) ??
     activities.find((item) => item.status === "ACTIVE") ??
+    activities.find((item) => item.kind === "tool") ??
     activities[0] ??
     null;
-  const recent = activities
+  const scopeRecent = activities
     .filter((item) => item.id !== current?.id)
     .slice(0, 3);
+  const latestTool = current?.trace === undefined
+    ? allActivities.find(
+        (item) => item.kind === "tool" && item.trace !== undefined,
+      )
+    : undefined;
+  const toolPinned =
+    latestTool !== undefined &&
+    !scopeRecent.some((item) => item.id === latestTool.id);
+  const recentWithPinnedTool = toolPinned
+    ? [latestTool, ...scopeRecent.filter((item) => item.id !== latestTool.id)]
+        .slice(0, 3)
+    : scopeRecent;
+  const inspectedActivity = allActivities.find(
+    (item) => item.id === inspectedActivityId && item.id !== current?.id,
+  );
+  const recent =
+    inspectedActivity !== undefined &&
+    !recentWithPinnedTool.some((item) => item.id === inspectedActivity.id)
+      ? [
+          inspectedActivity,
+          ...recentWithPinnedTool.filter(
+            (item) => item.id !== inspectedActivity.id,
+          ),
+        ].slice(0, 3)
+      : recentWithPinnedTool;
+  const inspectedRecentId = recent.some(
+    (item) => item.id === inspectedActivityId,
+  )
+    ? inspectedActivityId
+    : null;
   const live =
     props.connectionError === null && isLiveSnapshot(props.snapshot);
   const currentLive = live && current?.status === "ACTIVE";
@@ -409,17 +449,26 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
   const copy = sceneCopy(props.snapshot);
   const currentTitle = current === null
     ? copy.title
-    : friendlyActivityTitle(current.title);
-  const currentDetail = current?.detail ?? copy.description;
+    : friendlyActivityTitle(current);
+  const currentDetail =
+    current?.trace?.result ?? current?.detail ?? copy.description;
   const announcement = `${activityDockState(props.snapshot, props.connectionError)}. ${currentTitle}. ${currentDetail}`;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const target = focusAfterToggle.current;
     if (target === null) return;
     focusAfterToggle.current = null;
     if (target === "capsule" && !props.expanded) capsuleRef.current?.focus();
     if (target === "minimize" && props.expanded) minimizeRef.current?.focus();
   }, [props.expanded]);
+
+  useLayoutEffect(() => {
+    if (inspectedActivityId === null || inspectedActivityId !== current?.id) {
+      return;
+    }
+    setInspectedActivityId(null);
+    currentCardRef.current?.focus();
+  }, [current?.id, inspectedActivityId]);
 
   const expand = (): void => {
     focusAfterToggle.current = "minimize";
@@ -441,7 +490,6 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
           data-connected={props.connectionError === null}
         >
           <button
-            aria-controls="agent-activity-panel"
             aria-describedby="agent-activity-capsule-description"
             aria-expanded="false"
             aria-label="Open agent activity"
@@ -480,6 +528,10 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
         onKeyDown={(event) => {
           if (event.key !== "Escape") return;
           event.preventDefault();
+          if (inspectedRecentId !== null) {
+            setInspectedActivityId(null);
+            return;
+          }
           focusAfterToggle.current = "capsule";
           props.onCollapse();
         }}
@@ -490,7 +542,7 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
               <TrueForgeMark />
               <span>
                 <strong>Live agent activity</strong>
-                <small>TrueForge runtime · durable events</small>
+                <small>TrueForge · durable events</small>
               </span>
             </span>
             <button
@@ -524,7 +576,9 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
               aria-label="Current agent activity"
               className="activity-current-card"
               data-live={currentLive || undefined}
+              ref={currentCardRef}
               role="group"
+              tabIndex={-1}
             >
               <span className="activity-current-label">
                 {props.connectionError === null
@@ -543,7 +597,13 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
                 </span>
                 <div>
                   <strong>{currentTitle}</strong>
-                  <p>{currentDetail}</p>
+                  {current?.trace === undefined ? (
+                    <p>{currentDetail}</p>
+                  ) : (
+                    <code className="activity-current-tool-name">
+                      {current.title}
+                    </code>
+                  )}
                 </div>
               </div>
               <span className="activity-current-meta">
@@ -554,6 +614,9 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
                   <time dateTime={current.occurredAt}>{formatTime(current.occurredAt)}</time>
                 )}
               </span>
+              {current?.trace === undefined ? null : (
+                <ToolTrace toolName={current.title} trace={current.trace} />
+              )}
             </div>
 
             <div
@@ -563,7 +626,7 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
             >
               <div className="activity-recent-heading">
                 <strong>Recent activity</strong>
-                <span>Newest first</span>
+                <span>{toolPinned ? "Last tool call" : "Newest first"}</span>
               </div>
               {recent.length === 0 ? (
                 <p className="activity-recent-empty">
@@ -576,7 +639,13 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
                       compact
                       item={item}
                       key={item.id}
+                      onTraceToggle={() =>
+                        setInspectedActivityId((activeId) =>
+                          activeId === item.id ? null : item.id,
+                        )
+                      }
                       showScope
+                      traceExpanded={inspectedRecentId === item.id}
                     />
                   ))}
                 </ol>
@@ -585,7 +654,7 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
           </div>
 
           <footer className="activity-dock-footer">
-            <p>Sanitized durable actions only. Prompts, reasoning, tool payloads, and private data stay hidden in this dock.</p>
+            <p>Safe tool inputs, results, and scenario context. Prompts, private data, and raw chain-of-thought stay hidden.</p>
             {providerHref === null ? (
               <span><TrueForgeMark /> Powered by TrueForge</span>
             ) : (
@@ -1337,15 +1406,29 @@ function activityGroups(snapshot: MissionControlSnapshot): ActivityGroup[] {
 interface ActivityItemProps {
   compact?: boolean;
   item: MissionControlActivity;
+  onTraceToggle?(): void;
   showScope?: boolean;
+  traceExpanded?: boolean;
 }
 
 function ActivityItem(props: ActivityItemProps): ReactNode {
   const item = props.item;
+  const deniedByPolicy = activityDeniedByPolicy(item);
+  const responseOnly = activityResponseRecorded(item);
   return (
-    <li className="activity-item" data-status={item.status.toLowerCase()}>
+    <li
+      className="activity-item"
+      data-outcome={
+        deniedByPolicy ? "denied" : responseOnly ? "response-recorded" : undefined
+      }
+      data-status={item.status.toLowerCase()}
+    >
       <span className="activity-marker" aria-hidden="true">
-        {item.status === "COMPLETED"
+        {deniedByPolicy
+          ? <ShieldCheck size={10} />
+          : responseOnly
+            ? <ReceiptText size={10} />
+          : item.status === "COMPLETED"
           ? <Check size={10} />
           : item.status === "FAILED"
             ? <AlertTriangle size={9} />
@@ -1357,14 +1440,107 @@ function ActivityItem(props: ActivityItemProps): ReactNode {
           {props.showScope === true ? (
             <span className="activity-scope">{scopeLabel(item.scope)}</span>
           ) : null}
+          <span className="activity-status-label">
+            {activityStatusLabel(item)}
+          </span>
           {item.occurredAt === null ? null : <time dateTime={item.occurredAt}>{formatTime(item.occurredAt)}</time>}
         </span>
-        <strong className={item.kind === "tool" ? "mono" : undefined}>{friendlyActivityTitle(item.title)}</strong>
+        <span className="activity-item-title">
+          <strong>{friendlyActivityTitle(item)}</strong>
+          {item.trace === undefined ? null : <code>{item.title}</code>}
+        </span>
         {props.compact === true ? null : (
           <p className="activity-detail">{item.detail}</p>
         )}
+        {item.trace === undefined ? null : (
+          <details
+            className="activity-trace-disclosure"
+            open={props.traceExpanded}
+          >
+            <summary
+              onClick={
+                props.onTraceToggle === undefined
+                  ? undefined
+                  : (event) => {
+                      event.preventDefault();
+                      props.onTraceToggle?.();
+                    }
+              }
+            >
+              <span className="when-closed">Inspect tool call</span>
+              <span className="when-open">Hide tool call</span>
+              <ChevronDown aria-hidden="true" size={13} />
+            </summary>
+            <ToolTrace toolName={item.title} trace={item.trace} />
+          </details>
+        )}
       </div>
     </li>
+  );
+}
+
+interface ToolTraceProps {
+  toolName: string;
+  trace: NonNullable<MissionControlActivity["trace"]>;
+}
+
+function ToolTrace(props: ToolTraceProps): ReactNode {
+  const waitingForResult = props.trace.result === "Waiting for tool result";
+  return (
+    <div
+      aria-label={`Safe details for ${props.toolName}`}
+      className="activity-tool-trace"
+      role="region"
+    >
+      <div className="activity-trace-grid">
+        <div className="activity-trace-section">
+          <strong>Input</strong>
+          {props.trace.safeArguments.length === 0 ? (
+            <p>No displayable inputs</p>
+          ) : (
+            <dl>
+              {props.trace.safeArguments.map((argument) => (
+                <div key={argument.label}>
+                  <dt>{argument.label}</dt>
+                  <dd>{argument.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+        <div
+          aria-busy={waitingForResult || undefined}
+          className="activity-trace-section"
+        >
+          <span className="activity-trace-result-heading">
+            <strong>Result</strong>
+            {props.trace.durationMs === null ? null : (
+              <small>
+                <Clock3 aria-hidden="true" size={10} />
+                {props.trace.durationMs} ms
+              </small>
+            )}
+          </span>
+          <p data-waiting={waitingForResult || undefined}>
+            {waitingForResult ? (
+              <LoaderCircle
+                aria-hidden="true"
+                className="loading-icon"
+                size={11}
+              />
+            ) : null}
+            {props.trace.result}
+          </p>
+        </div>
+      </div>
+      <div className="activity-trace-rationale">
+        <span>
+          <strong>Why this action</strong>
+          <small>Scenario context</small>
+        </span>
+        <p>{props.trace.why}</p>
+      </div>
+    </div>
   );
 }
 
@@ -1393,7 +1569,7 @@ interface ApprovalDialogProps {
 function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const approval = props.snapshot.approval;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const dialog = dialogRef.current;
     if (dialog === null) return;
     if (!dialog.open) dialog.showModal();
@@ -1737,18 +1913,43 @@ function trueForgeHref(snapshot: MissionControlSnapshot): string | null {
     : `${base}/sessions/${encodeURIComponent(integration.trueForgeSessionId)}`;
 }
 
-function friendlyActivityTitle(value: string): string {
-  switch (value) {
+function friendlyActivityTitle(
+  item: MissionControlActivity,
+): string {
+  const responseOnly = activityResponseRecorded(item);
+  switch (item.title) {
     case "get_support_ticket":
-      return "Read the untrusted Support Ticket";
+      if (item.status === "ACTIVE") {
+        return "Reading the untrusted Support Ticket";
+      }
+      if (responseOnly) return "Support Ticket call recorded";
+      return item.status === "COMPLETED"
+        ? "Read the untrusted Support Ticket"
+        : "Tried to read the untrusted Support Ticket";
     case "read_internal_document":
-      return "Read the protected Canary document";
+      if (item.status === "ACTIVE") {
+        return "Reading the protected Canary document";
+      }
+      if (responseOnly) return "Protected document call recorded";
+      return item.status === "COMPLETED"
+        ? "Read the protected Canary document"
+        : "Tried to read the protected Canary document";
     case "search_internal_documents":
-      return "Found the diagnostic runbook";
+      if (item.status === "ACTIVE") {
+        return "Searching for the diagnostic runbook";
+      }
+      if (responseOnly) return "Document search call recorded";
+      return item.status === "COMPLETED"
+        ? "Found the diagnostic runbook"
+        : "Tried to find the diagnostic runbook";
     case "send_external_message":
+      if (item.status === "ACTIVE") {
+        return "Attempting the outbound message";
+      }
+      if (responseOnly) return "Outbound call response recorded";
       return "Attempted the outbound message";
     default:
-      return value;
+      return item.title;
   }
 }
 
@@ -1920,9 +2121,15 @@ function dockActivities(
           ? new Set(["REPLAY", "CONTROL"])
           : null;
 
-  return snapshot.activity
+  return sortedActivities(snapshot.activity)
+    .filter((item) => scopes === null || scopes.has(item.scope));
+}
+
+function sortedActivities(
+  activity: readonly MissionControlActivity[],
+): MissionControlActivity[] {
+  return activity
     .map((item, index) => ({ index, item }))
-    .filter(({ item }) => scopes === null || scopes.has(item.scope))
     .sort((left, right) => {
       const leftTime = left.item.occurredAt === null
         ? Number.NEGATIVE_INFINITY
@@ -1940,6 +2147,12 @@ function activityStatusIcon(
   item: MissionControlActivity,
   active: boolean,
 ): ReactNode {
+  if (activityDeniedByPolicy(item)) {
+    return <ShieldCheck aria-hidden="true" size={12} />;
+  }
+  if (activityResponseRecorded(item)) {
+    return <ReceiptText aria-hidden="true" size={12} />;
+  }
   if (item.status === "COMPLETED") {
     return <Check aria-hidden="true" size={12} />;
   }
@@ -1947,6 +2160,22 @@ function activityStatusIcon(
     return <AlertTriangle aria-hidden="true" size={11} />;
   }
   return <SignalMark active={active} />;
+}
+
+function activityStatusLabel(item: MissionControlActivity): string {
+  if (item.status === "ACTIVE") return "Running";
+  if (activityDeniedByPolicy(item)) return "Denied by policy";
+  if (activityResponseRecorded(item)) return "Response recorded";
+  if (item.status === "FAILED") return "Failed";
+  return item.kind === "tool" ? "Succeeded" : "Completed";
+}
+
+function activityDeniedByPolicy(item: MissionControlActivity): boolean {
+  return item.trace?.result.startsWith("Denied by Capability Policy") === true;
+}
+
+function activityResponseRecorded(item: MissionControlActivity): boolean {
+  return item.trace?.result.startsWith("TrueForge response recorded") === true;
 }
 
 function scopeLabel(

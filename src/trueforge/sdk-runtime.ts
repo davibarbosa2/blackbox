@@ -31,6 +31,7 @@ export function createSdkTrueForgeRuntime(
   const secrets = [config.openRouter.apiKey, config.daytona.apiKey];
   const executeSupportRun: TrueForgeRuntime["executeBaseline"] = async ({
     mcpAuthorization,
+    onToolCall,
     runId,
     signal,
   }) => {
@@ -42,7 +43,13 @@ export function createSdkTrueForgeRuntime(
         mcpAuthorization,
         signal,
       );
-      return await executeTrueForgeBaseline(client, agentName, runId, signal);
+      return await executeTrueForgeBaseline(
+        client,
+        agentName,
+        runId,
+        signal,
+        onToolCall,
+      );
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Support Agent Run failed";

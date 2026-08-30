@@ -40,7 +40,7 @@ export function createTrueForgeProcess(
       },
       health: {
         expectedBody: "OK!",
-        timeoutMs: 15_000,
+        timeoutMs: 30_000,
         url: `${config.baseUrl}/healthz`,
       },
       name: "TrueForge",

@@ -1,6 +1,6 @@
 import { TrueForge } from "@truefoundry/trueforge-sdk";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CANONICAL_TOOL_NAMES } from "../../src/evidence/ledger.js";
 import { executeTrueForgeBaseline } from "../../src/trueforge/execute-baseline.js";
@@ -76,7 +76,72 @@ const EVENTS = [
 ];
 
 describe("TrueForge Baseline Run execution", () => {
-  it("reconciles the persisted canonical MCP sequence and responses", async () => {
+  it("emits a canonical tool invocation before the live turn finishes", async () => {
+    let releaseStream = (): void => undefined;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    const observedCalls: Array<{
+      arguments: string;
+      eventId: string;
+      occurredAt: string;
+      toolCallId: string;
+      toolName: (typeof CANONICAL_TOOL_NAMES)[number];
+    }> = [];
+    const firstCall = TOOL_EVENTS[0]!;
+    const firstCallStarted = {
+      ...firstCall,
+      finish_reason: null,
+      tool_calls: undefined,
+    };
+    const firstCallIdentity = {
+      id: firstCall.id,
+      thread_id: "main",
+      tool_calls: [
+        {
+          function: {
+            arguments: '{"run',
+            name: "get_support_ticket",
+          },
+          id: "call-1",
+          index: 0,
+          tool_info: {
+            name: "get_support_ticket",
+            server_id: "server-1",
+            server_name: "blackbox-scenario",
+            type: "mcp",
+          },
+          type: "function",
+        },
+      ],
+      type: "model.message.delta",
+    };
+    const firstCallFinished = {
+      finish_reason: "tool_calls",
+      id: firstCall.id,
+      thread_id: "main",
+      tool_calls: [
+        {
+          function: { arguments: 'Id":"run-1"}' },
+          index: 0,
+        },
+      ],
+      type: "model.message.delta",
+    };
+    const liveEvents = [
+      TURN_CREATED,
+      MCP_INITIALIZED,
+      firstCallStarted,
+      firstCallIdentity,
+      firstCallFinished,
+      ...TOOL_EVENTS.slice(1),
+      TURN_DONE,
+    ];
+    const persistedEvents = EVENTS.map((event) =>
+      event === firstCall
+        ? { ...event, created_at: "2026-08-26T20:00:00.250Z" }
+        : event,
+    );
     const app = new Hono();
     app.post("/api/v1/sessions", (context) =>
       context.json({
@@ -95,11 +160,20 @@ describe("TrueForge Baseline Run execution", () => {
       }),
     );
     app.post("/api/v1/sessions/:sessionId/turns", () => {
-      const body = EVENTS.map(
-        (event, index) =>
-          `id: ${index + 1}\ndata: ${JSON.stringify(event)}\n\n`,
-      ).join("");
-      return new Response(body, {
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream({
+        async start(controller) {
+          for (const [index, event] of liveEvents.entries()) {
+            controller.enqueue(
+              encoder.encode(
+                `id: ${index + 1}\ndata: ${JSON.stringify(event)}\n\n`,
+              ),
+            );
+            if (event === firstCallFinished) await streamGate;
+          }
+          controller.close();
+        },
+      }), {
         headers: { "content-type": "text/event-stream" },
       });
     });
@@ -117,7 +191,7 @@ describe("TrueForge Baseline Run execution", () => {
     app.get(
       "/api/v1/sessions/:sessionId/turns/:turnId/events",
       (context) =>
-        context.json({ data: EVENTS, pagination: { limit: 100 } }),
+        context.json({ data: persistedEvents, pagination: { limit: 100 } }),
     );
     const client = new TrueForge({
       baseUrl: "http://trueforge.test",
@@ -125,11 +199,31 @@ describe("TrueForge Baseline Run execution", () => {
       maxRetries: 0,
     });
 
-    const evidence = await executeTrueForgeBaseline(
+    let settled = false;
+    const execution = executeTrueForgeBaseline(
       client,
       "blackbox-support-agent",
       "run-1",
-    );
+      undefined,
+      (call) => observedCalls.push(call),
+    ).finally(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => {
+      expect(observedCalls).toEqual([
+        {
+          arguments: JSON.stringify({ runId: "run-1" }),
+          eventId: "event-call-1:tool:call-1",
+          occurredAt: CREATED_AT,
+          toolCallId: "call-1",
+          toolName: "get_support_ticket",
+        },
+      ]);
+    });
+    expect(settled).toBe(false);
+    releaseStream();
+    const evidence = await execution;
 
     expect(evidence).toMatchObject({
       mcpInitialization: {
@@ -145,5 +239,6 @@ describe("TrueForge Baseline Run execution", () => {
     expect(evidence.toolResponses.map((response) => response.toolCallId)).toEqual(
       ["call-1", "call-2", "call-3", "call-4"],
     );
+    expect(observedCalls).toEqual(evidence.toolCalls);
   });
 });

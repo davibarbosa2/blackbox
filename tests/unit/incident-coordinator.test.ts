@@ -10,6 +10,7 @@ import type {
   EvidenceRunRead,
   RunManifest,
 } from "../../src/evidence/ledger.js";
+import { SqliteEvidenceLedger } from "../../src/evidence/ledger.js";
 import { IncidentCoordinator } from "../../src/incident/coordinator.js";
 import type { BaselineRunObservation } from "../../src/observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../../src/policy/capability-policy.js";
@@ -20,13 +21,163 @@ import {
   createReplayRunManifest,
 } from "../../src/scenario/definition.js";
 import { InvestigationExecutionError } from "../../src/trueforge/runtime.js";
-import type { TrueForgeRuntime } from "../../src/trueforge/runtime.js";
+import type {
+  BaselineExecutionEvidence,
+  TrueForgeRuntime,
+} from "../../src/trueforge/runtime.js";
 import type {
   InvestigationExecutionEvidence,
   InvestigationExecutionRequest,
 } from "../../src/trueforge/runtime.js";
 
 describe("Incident coordinator observability", () => {
+  it("projects a live canonical tool invocation and terminates it on Run failure", async () => {
+    const privateCanary = "BLACKBOX-CANARY-live-tool-call";
+    let failExecution = (_error: Error): void => undefined;
+    const execution = new Promise<BaselineExecutionEvidence>((_resolve, reject) => {
+      failExecution = reject;
+    });
+    const harness = createFinalizingHarness("INCONCLUSIVE");
+    const runtime: TrueForgeRuntime = {
+      async executeBaseline(request) {
+        request.onToolCall?.({
+          arguments: JSON.stringify({
+            destination: `http://127.0.0.1:3000/api/external-sink/${request.runId}`,
+            message: privateCanary,
+            runId: request.runId,
+          }),
+          eventId: `${request.runId}:live-send-call`,
+          occurredAt: "2026-08-30T12:00:01.000Z",
+          toolCallId: "live-send-call",
+          toolName: "send_external_message",
+        });
+        return execution;
+      },
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy(),
+      remediations,
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    const activeSnapshot = coordinator.readMissionControl();
+    expect(activeSnapshot.activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `${started.runId}:live-send-call`,
+          source: "TRUEFORGE",
+          status: "ACTIVE",
+          trace: expect.objectContaining({ result: "Waiting for tool result" }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(activeSnapshot)).not.toContain(privateCanary);
+
+    failExecution(new Error("Request failed (503): TrueForge unavailable"));
+    await vi.waitFor(() => {
+      expect(harness.finalized).toHaveBeenCalledOnce();
+    });
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `${started.runId}:live-send-call`,
+          status: "FAILED",
+          trace: expect.objectContaining({
+            result: "Tool result missing from durable evidence",
+          }),
+        }),
+      ]),
+    );
+    remediations.close();
+  });
+
+  it("keeps one durable invocation when final evidence repeats the live call", async () => {
+    let finishExecution = (): void => undefined;
+    const executionGate = new Promise<void>((resolve) => {
+      finishExecution = resolve;
+    });
+    const ledger = new SqliteEvidenceLedger(":memory:");
+    const runtime: TrueForgeRuntime = {
+      async executeBaseline(request) {
+        const occurredAt = new Date().toISOString();
+        const call = {
+          arguments: JSON.stringify({ runId: request.runId }),
+          eventId: `${request.runId}:live-ticket-call`,
+          occurredAt,
+          toolCallId: "live-ticket-call",
+          toolName: "get_support_ticket" as const,
+        };
+        request.onToolCall?.(call);
+        await executionGate;
+        return {
+          mcpInitialization: {
+            eventId: `${request.runId}:mcp-initialized`,
+            occurredAt,
+            serverName: "blackbox-scenario",
+          },
+          sessionId: "session-live-dedupe",
+          toolCalls: [call],
+          toolResponses: [],
+          turn: {
+            eventId: `${request.runId}:turn-done`,
+            occurredAt,
+            status: "done",
+            turnId: "turn-live-dedupe",
+          },
+        };
+      },
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy(),
+      remediations,
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `${started.runId}:live-ticket-call`,
+          status: "ACTIVE",
+        }),
+      ]),
+    );
+
+    finishExecution();
+    await vi.waitFor(() => {
+      expect(coordinator.read(started.runId)?.status).toBe("completed");
+    });
+    expect(
+      ledger
+        .readBundle(started.runId)
+        ?.timeline.filter(
+          (record) =>
+            record.type === "tool.called" &&
+            record.id === `${started.runId}:live-ticket-call`,
+        ),
+    ).toHaveLength(1);
+    await coordinator.shutdown();
+    ledger.close();
+    remediations.close();
+  });
+
   it("records an incomplete canonical workflow as Victim Agent noncompliance", async () => {
     const harness = createFinalizingHarness("INCONCLUSIVE");
     const runtime: TrueForgeRuntime = {
