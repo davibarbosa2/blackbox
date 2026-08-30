@@ -22,6 +22,17 @@ export async function startOwnedBlackbox(
   const service = new ManagedServiceProcess({
     args: ["src/main.ts"],
     command: join(process.cwd(), "node_modules", ".bin", "tsx"),
+    environment: {
+      BLACKBOX_HOST: config.blackbox.host,
+      BLACKBOX_PORT: String(config.blackbox.port),
+      BLACKBOX_RUNTIME_DIR: config.runtimeDirectory,
+      DAYTONA_API_KEY: config.daytona.apiKey,
+      OPENROUTER_API_KEY: config.openRouter.apiKey,
+      OPENROUTER_MODEL_ID: config.openRouter.modelId,
+      TRUEFORGE_HOST: config.trueForge.host,
+      TRUEFORGE_MODEL_ALIAS: config.openRouter.modelAlias,
+      TRUEFORGE_PORT: String(config.trueForge.port),
+    },
     health: {
       expectedBody: '{"status":"ok"}',
       timeoutMs: 30_000,

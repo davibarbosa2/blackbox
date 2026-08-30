@@ -176,14 +176,7 @@ export function createBaselineRunManifest(
           name: SUPPORT_AGENT_NAME,
         }),
       ),
-      model: hash(
-        JSON.stringify({
-          modelAlias,
-          provider: "openrouter",
-          trueForgeModel,
-          upstreamModelId: modelId,
-        }),
-      ),
+      model: createModelFingerprint(modelAlias, modelId),
       policy: policy.fingerprint(),
       scenario: hash(
         JSON.stringify({ ...SCENARIO_DEFINITION, sinkBaseUrl: baseUrl }),
@@ -194,6 +187,20 @@ export function createBaselineRunManifest(
     kind: "baseline",
     runId,
   };
+}
+
+export function createModelFingerprint(
+  modelAlias: string,
+  modelId: string,
+): string {
+  return hash(
+    JSON.stringify({
+      modelAlias,
+      provider: "openrouter",
+      trueForgeModel: `openrouter/${modelAlias}`,
+      upstreamModelId: modelId,
+    }),
+  );
 }
 
 export function createReplayRunManifest(
