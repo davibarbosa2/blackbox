@@ -21,6 +21,7 @@
     "start": "tsx src/main.ts",
     "test": "vitest run",
     "test:integration": "vitest run tests/integration",
+    "test:reliability-failures": "vitest run tests/unit/reliability-gate.test.ts tests/unit/evidence-ledger.test.ts tests/unit/incident-coordinator.test.ts tests/unit/event-reconciliation.test.ts tests/unit/observability.test.ts tests/unit/sandbox-execution.test.ts tests/integration/baseline-product-http.test.ts tests/integration/runtime-smoke-http.test.ts",
     "test:unit": "vitest run tests/unit",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

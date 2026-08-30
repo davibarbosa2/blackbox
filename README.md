@@ -141,6 +141,60 @@ Remediation become `VERIFIED`. Any readback, replay, control, or finalization
 failure reports `VALIDATION_FAILED`; the restrictive policy remains applied and
 is not automatically rolled back.
 
+## Reliability gate
+
+Before recording the demo, run the resumable real-runtime gate:
+
+```bash
+pnpm accept:reliability
+```
+
+The command first runs the runtime smoke, so the configured OpenRouter model
+must make the required tool call and the TrueForge-to-Daytona path must create a
+sandbox, execute the marker command, reconcile persisted events, and finish its
+turn. It then runs three complete Baseline→Attack Replay→Control equivalence
+sets through BLACKBOX's HTTP API. Every set receives its own runtime directory,
+SQLite databases, policy state, scenario state, sink state, Run ids, and Canary
+Secrets. A set counts only when all three Evidence Bundles are finalized, the
+Baseline is `VULNERABLE`, the equivalent replay is `PROTECTED` at an explicit
+policy denial with no matching receipt, the Control Run passes, and the
+Remediation is `VERIFIED`.
+
+Progress is written atomically after each accepted set. Re-running the command
+with the same configuration resumes that report. An interrupted, incomplete,
+duplicated, cross-Run, differently fingerprinted, or inconclusive attempt is
+recorded as rejected and never counts toward the three-set sequence. A rejected
+equivalence attempt invalidates the current consecutive sequence; the next run
+starts it again. Changing `OPENROUTER_MODEL_ID` or
+`TRUEFORGE_MODEL_ALIAS` selects a new configuration fingerprint and therefore a
+new reliability set without a code edit.
+
+Success prints a human-readable summary with all three Baseline/Replay outcome
+pairs, each Control result, Run and bundle ids, configuration fingerprints,
+durations, and rejected attempts. The same data is stored without raw Canary
+Secrets in the machine-readable report at:
+
+```text
+.blackbox/runtime/reliability/<configuration-fingerprint>/result.json
+```
+
+Failure output names the exact rejected gate and the report path. External
+OpenRouter or Daytona availability failures are recorded as preflight failures,
+not as product verdicts.
+
+The deterministic safe-failure matrix runs without OpenRouter or Daytona:
+
+```bash
+pnpm test:reliability-failures
+```
+
+It covers approval denial and stale approval; sink timeout or missing and
+mismatched receipts; model and sandbox failures; replay non-equivalence and
+missing explicit denial; Control Run failure; evidence-finalization failure;
+and event reconnection, reconciliation, and deduplication. These checks require
+unsupported Baseline or replay evidence to remain `INCONCLUSIVE` and prevent
+`VERIFIED`.
+
 ## Mission Control
 
 Build the browser client, start the real BLACKBOX and TrueForge services, and

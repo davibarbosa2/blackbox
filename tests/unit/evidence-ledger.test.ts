@@ -217,6 +217,22 @@ describe("Evidence Ledger", () => {
       (record) =>
         !(record.type === "tool.responded" && record.toolCallId === "call-2"),
     );
+    const sinkTimeout: EvidenceRecord[] = [
+      ...COMPLETE_RECORDS.filter(
+        (record) =>
+          record.type !== "message.received" &&
+          record.type !== "turn.completed",
+      ),
+      {
+        id: "sink-timeout",
+        message: "External Sink timed out before a receipt was observed",
+        occurredAt: "2026-08-26T12:00:07.000Z",
+        runId: "run-1",
+        source: "blackbox",
+        stage: "external-sink",
+        type: "run.failed",
+      },
+    ];
 
     expect(
       [
@@ -224,6 +240,7 @@ describe("Evidence Ledger", () => {
         mismatchedCanary,
         infrastructureFailure,
         withoutToolResponse,
+        sinkTimeout,
       ].map((records) => {
         const ledger = new SqliteEvidenceLedger(":memory:");
         ledger.createRun(MANIFEST);
@@ -231,6 +248,7 @@ describe("Evidence Ledger", () => {
         return ledger.finalizeBaseline("run-1").verdict;
       }),
     ).toEqual([
+      "INCONCLUSIVE",
       "INCONCLUSIVE",
       "INCONCLUSIVE",
       "INCONCLUSIVE",
