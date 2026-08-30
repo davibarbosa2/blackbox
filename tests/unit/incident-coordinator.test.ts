@@ -7,13 +7,18 @@ import type {
   BaselineRunManifest,
   EvidenceLedger,
   EvidenceRecord,
+  EvidenceRunRead,
   RunManifest,
 } from "../../src/evidence/ledger.js";
 import { IncidentCoordinator } from "../../src/incident/coordinator.js";
 import type { BaselineRunObservation } from "../../src/observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../../src/policy/capability-policy.js";
 import { SqliteRemediationStore } from "../../src/remediation/store.js";
-import { createBaselineRunManifest } from "../../src/scenario/definition.js";
+import {
+  createBaselineRunManifest,
+  createControlRunManifest,
+  createReplayRunManifest,
+} from "../../src/scenario/definition.js";
 import { InvestigationExecutionError } from "../../src/trueforge/runtime.js";
 import type { TrueForgeRuntime } from "../../src/trueforge/runtime.js";
 import type {
@@ -362,6 +367,203 @@ describe("Incident coordinator observability", () => {
       ]),
     );
     await coordinator.shutdown();
+    remediations.close();
+  });
+
+  it("discovers only matching active verification Runs before references are recorded", () => {
+    const incidentId = "incident-live-verification";
+    const baselineRunId = "run-live-baseline";
+    const trustedDestination = "https://trusted.example/messages";
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const basePolicy = policy.read();
+    const dryRun = policy.dryRunPatch({
+      destinationAllowlist: [trustedDestination],
+      expectedBaseHash: basePolicy.hash,
+      expectedBaseVersion: basePolicy.version,
+    });
+    const baselineManifest = createBaselineRunManifest(
+      incidentId,
+      baselineRunId,
+      "BLACKBOX-CANARY-live-baseline",
+      "2026-08-28T12:00:00.000Z",
+      "tool-model",
+      "vendor/tool-model",
+      policy,
+      "http://127.0.0.1:3000",
+    );
+    const baselineBundle: BaselineEvidenceBundle = {
+      bundleHash: "a".repeat(64),
+      completeness: { complete: true, missing: [] },
+      finalizedAt: "2026-08-28T12:00:01.000Z",
+      manifest: baselineManifest,
+      schemaVersion: 1,
+      timeline: [],
+      verdict: "VULNERABLE",
+    };
+    const replayManifest = createReplayRunManifest(
+      baselineManifest,
+      "run-live-replay",
+      "BLACKBOX-CANARY-live-replay",
+      "2026-08-28T12:00:02.000Z",
+      policy,
+    );
+    const controlManifest = createControlRunManifest(
+      baselineManifest,
+      "run-live-control",
+      "BLACKBOX-CANARY-live-control",
+      "BLACKBOX-CONTROL-live",
+      "2026-08-28T12:00:03.000Z",
+      policy,
+      trustedDestination,
+    );
+    const activeRun = (manifest: RunManifest): EvidenceRunRead => ({
+      manifest,
+      timeline: [
+        {
+          id: `${manifest.runId}:executing`,
+          occurredAt: manifest.createdAt,
+          runId: manifest.runId,
+          source: "blackbox",
+          state: "EXECUTING",
+          type: "run.state_changed",
+        },
+      ],
+    });
+    const latestRuns = new Map<RunManifest["kind"], EvidenceRunRead>([
+      [
+        "baseline",
+        { bundle: baselineBundle, manifest: baselineManifest, timeline: [] },
+      ],
+      ["replay", activeRun(replayManifest)],
+      ["control", activeRun(controlManifest)],
+    ]);
+    const ledger: EvidenceLedger = {
+      append: vi.fn(),
+      createRun: vi.fn(),
+      finalizeBaseline: vi.fn(),
+      finalizeControl: vi.fn(),
+      finalizeReplay: vi.fn(),
+      readBundle: vi.fn(),
+      readLatestRun: (kind) => latestRuns.get(kind),
+      readManifest: vi.fn(),
+      readRun: vi.fn(),
+    };
+    const investigation = investigationEvidence(
+      {
+        bundle: baselineBundle,
+        mcpAuthorization: "run-capability",
+        policy: basePolicy,
+        signal: new AbortController().signal,
+        trustedDestination,
+      },
+      [trustedDestination],
+    );
+    const pendingDecision = {
+      actionId: investigation.pendingAction.actionId,
+      callId: investigation.pendingAction.callId,
+      sessionId: investigation.pendingAction.sessionId,
+      threadId: investigation.pendingAction.threadId,
+      toolName: investigation.pendingAction.toolName,
+      turnId: investigation.pendingAction.turnId,
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    remediations.start(
+      incidentId,
+      baselineRunId,
+      baselineBundle.bundleHash,
+      "run-capability",
+    );
+    remediations.drafted(incidentId);
+    remediations.dryRunPassed(incidentId, dryRun);
+    remediations.awaitingApproval(incidentId, {
+      analysis: investigation.analysis,
+      diagnosis: investigation.diagnosis,
+      dryRun,
+      evidenceJustification:
+        investigation.pendingAction.proposal.evidenceJustification,
+      pendingDecision,
+      subagents: investigation.subagents,
+    });
+    remediations.applied(
+      incidentId,
+      {
+        ...pendingDecision,
+        decidedAt: "2026-08-28T12:00:01.500Z",
+        decision: "allow",
+      },
+      { ...dryRun.candidate, hash: dryRun.candidateHash },
+    );
+    remediations.verifying(incidentId);
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime: {
+        executeBaseline: () => new Promise(() => undefined),
+        executeSmoke: () => new Promise(() => undefined),
+      },
+      trustedDestination,
+    });
+
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "run-live-replay:executing",
+          scope: "REPLAY",
+          status: "ACTIVE",
+        }),
+        expect.objectContaining({
+          id: "run-live-control:executing",
+          scope: "CONTROL",
+          status: "ACTIVE",
+        }),
+      ]),
+    );
+
+    const otherIncidentBaseline = {
+      ...baselineManifest,
+      incidentId: "incident-stale",
+    };
+    const otherBaseline = {
+      ...baselineManifest,
+      runId: "run-stale-baseline",
+    };
+    latestRuns.set(
+      "replay",
+      activeRun(
+        createReplayRunManifest(
+          otherIncidentBaseline,
+          "run-stale-replay",
+          "BLACKBOX-CANARY-stale-replay",
+          "2026-08-28T12:00:04.000Z",
+          policy,
+        ),
+      ),
+    );
+    latestRuns.set(
+      "control",
+      activeRun(
+        createControlRunManifest(
+          otherBaseline,
+          "run-stale-control",
+          "BLACKBOX-CANARY-stale-control",
+          "BLACKBOX-CONTROL-stale",
+          "2026-08-28T12:00:05.000Z",
+          policy,
+          trustedDestination,
+        ),
+      ),
+    );
+
+    expect(
+      coordinator
+        .readMissionControl()
+        .activity.filter(
+          (item) => item.scope === "REPLAY" || item.scope === "CONTROL",
+        ),
+    ).toEqual([]);
     remediations.close();
   });
 

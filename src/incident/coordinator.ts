@@ -224,16 +224,12 @@ export class IncidentCoordinator {
       candidateIncident?.baseline.runId === runId
         ? candidateIncident
         : undefined;
-    const replayRunId = verificationRunId(incident, "replay");
-    const controlRunId = verificationRunId(incident, "control");
-    const replayRun =
-      replayRunId === undefined
-        ? undefined
-        : this.#ledger.readRun(replayRunId);
-    const controlRun =
-      controlRunId === undefined
-        ? undefined
-        : this.#ledger.readRun(controlRunId);
+    const replayRun = readVerificationRun(this.#ledger, incident, "replay");
+    const controlRun = readVerificationRun(
+      this.#ledger,
+      incident,
+      "control",
+    );
     return createMissionControlSnapshot(
       baselineRun,
       replayRun,
@@ -923,6 +919,28 @@ function verificationRunId(
     return undefined;
   }
   return remediation.verification?.[kind]?.runId;
+}
+
+function readVerificationRun(
+  ledger: EvidenceLedger,
+  incident: DurableIncidentRead | undefined,
+  kind: "replay" | "control",
+) {
+  const referencedRunId = verificationRunId(incident, kind);
+  if (referencedRunId !== undefined) {
+    return ledger.readRun(referencedRunId);
+  }
+  if (incident?.remediation.state !== "VERIFYING") return undefined;
+
+  const latestRun = ledger.readLatestRun(kind);
+  if (
+    latestRun?.manifest.kind !== kind ||
+    latestRun.manifest.incidentId !== incident.incidentId ||
+    latestRun.manifest.baselineRunId !== incident.baseline.runId
+  ) {
+    return undefined;
+  }
+  return latestRun;
 }
 
 function validateInvestigationEvidence(
