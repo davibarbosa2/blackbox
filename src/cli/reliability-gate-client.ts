@@ -133,7 +133,7 @@ const activeAttemptSchema = z.object({
 
 const reliabilityConfigurationSchema = z.object({
   baselineFingerprints: fingerprintsSchema,
-  controlFingerprints: fingerprintsSchema,
+  controlFingerprints: fingerprintsSchema.omit({ scenario: true }),
   fingerprint: z.string().length(64),
   modelAlias: z.string(),
   modelFingerprint: z.string().length(64),
@@ -312,7 +312,7 @@ export function createReliabilityConfiguration(
     "1970-01-01T00:00:01.000Z",
     policy,
   ).fingerprints;
-  const controlFingerprints = createControlRunManifest(
+  const controlManifestFingerprints = createControlRunManifest(
     baselineManifest,
     "configuration-control",
     "configuration-control-canary",
@@ -321,6 +321,9 @@ export function createReliabilityConfiguration(
     policy,
     trustedDestination,
   ).fingerprints;
+  const controlFingerprints = stableControlFingerprints(
+    controlManifestFingerprints,
+  );
   const material = {
     baselineFingerprints,
     blackbox: config.blackbox,
@@ -675,7 +678,7 @@ function validateSet(
         report.configuration.replayFingerprints,
       ) &&
       isDeepStrictEqual(
-        control.fingerprints,
+        stableControlFingerprints(control.fingerprints),
         report.configuration.controlFingerprints,
       ),
     "configuration.run_fingerprints",
@@ -790,6 +793,17 @@ function acceptedRun(
     fingerprints: run.fingerprints,
     [outcomeName]: outcome,
     runId: run.runId,
+  };
+}
+
+function stableControlFingerprints(
+  fingerprints: z.infer<typeof fingerprintsSchema>,
+): Omit<z.infer<typeof fingerprintsSchema>, "scenario"> {
+  return {
+    agent: fingerprints.agent,
+    model: fingerprints.model,
+    policy: fingerprints.policy,
+    tools: fingerprints.tools,
   };
 }
 

@@ -116,6 +116,26 @@ describe("reliability gate", () => {
     );
   });
 
+  it("accepts runtime-specific Control Run scenarios with stable configuration fingerprints", async () => {
+    const runtimeDirectory = await temporaryDirectory(cleanup);
+    let sets = 0;
+
+    const report = await runReliabilityGate({
+      config: config(runtimeDirectory),
+      async executeSet() {
+        sets += 1;
+        const evidence = equivalenceSet(sets);
+        evidence.control.fingerprints.scenario = `runtime-control-${sets}`;
+        return evidence;
+      },
+      preflight: successfulPreflight,
+      revalidateSet: unexpectedRevalidation,
+    });
+
+    expect(report.status).toBe("PASSED");
+    expect(report.acceptedSets).toHaveLength(3);
+  });
+
   it("does not count an interrupted attempt and restarts the consecutive sequence", async () => {
     const runtimeDirectory = await temporaryDirectory(cleanup);
     const controller = new AbortController();
@@ -414,6 +434,7 @@ function equivalenceSet(index: number): ReliabilityEquivalenceSetEvidence {
       finalizedAt: `2026-08-30T12:0${index}:03.000Z`,
       fingerprints: {
         ...EXPECTED_CONFIGURATION.controlFingerprints,
+        scenario: "runtime-control-scenario",
       },
       incidentId,
       missingEvidence: [],
