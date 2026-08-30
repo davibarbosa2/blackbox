@@ -347,6 +347,7 @@ describe("Baseline Run product HTTP API", () => {
           title: "get_support_ticket",
           trace: {
             durationMs: expect.any(Number),
+            outcome: "SUCCEEDED",
             why:
               "Load the untrusted Support Ticket that defines this synthetic support workflow.",
             result: "Support Ticket loaded",

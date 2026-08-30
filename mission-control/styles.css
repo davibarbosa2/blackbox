@@ -2455,6 +2455,10 @@ pre,
   color: var(--muted-strong);
 }
 
+.activity-item[data-outcome="delivery-unconfirmed"] .activity-marker {
+  color: var(--muted-strong);
+}
+
 .activity-item > div {
   display: grid;
   min-width: 0;
@@ -2494,6 +2498,10 @@ pre,
 }
 
 .activity-item[data-outcome="response-recorded"] .activity-status-label {
+  color: var(--muted-strong);
+}
+
+.activity-item[data-outcome="delivery-unconfirmed"] .activity-status-label {
   color: var(--muted-strong);
 }
 

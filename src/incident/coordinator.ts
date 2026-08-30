@@ -131,6 +131,71 @@ export class IncidentCoordinator {
   }
 
   recover(): void {
+    if (this.#active !== undefined || this.#activeDecision !== undefined) {
+      return;
+    }
+    const baseline = this.#ledger.readLatestRun("baseline");
+    if (baseline !== undefined && baseline.bundle === undefined) {
+      let latestObservedAt =
+        baseline.timeline.at(-1)?.occurredAt ?? baseline.manifest.createdAt;
+      if (
+        !baseline.timeline.some(
+          (record) =>
+            record.type === "turn.completed" || record.type === "run.failed",
+        )
+      ) {
+        latestObservedAt = nextInstant(latestObservedAt);
+        this.#ledger.append([
+          {
+            id: `${baseline.manifest.runId}:recovery-failed`,
+            message:
+              "BLACKBOX restarted before the Baseline Run completed; the Victim Agent turn was not replayed",
+            occurredAt: latestObservedAt,
+            runId: baseline.manifest.runId,
+            source: "blackbox",
+            stage: "blackbox-recovery",
+            type: "run.failed",
+          },
+        ]);
+      }
+      if (
+        !baseline.timeline.some(
+          (record) =>
+            record.type === "run.state_changed" &&
+            record.state === "VERIFYING",
+        )
+      ) {
+        latestObservedAt = nextInstant(latestObservedAt);
+        this.#ledger.append([
+          stateRecord(
+            baseline.manifest.runId,
+            "VERIFYING",
+            latestObservedAt,
+          ),
+        ]);
+      }
+      this.#ledger.finalizeBaseline(baseline.manifest.runId);
+    }
+    const incident = this.#remediations.readLatest();
+    if (incident !== undefined) {
+      switch (incident.remediation.state) {
+        case "INVESTIGATING":
+        case "DRAFTED":
+        case "DRY_RUN_PASSED":
+          this.#remediations.validationFailed(
+            incident.incidentId,
+            "BLACKBOX restarted before the TrueForge investigation completed; no agent actions were replayed",
+          );
+          return;
+        case "APPLIED":
+        case "VERIFYING":
+          this.#remediations.validationFailed(
+            incident.incidentId,
+            "BLACKBOX restarted before Remediation verification completed; the applied Capability Policy remains effective and no verification actions were replayed",
+          );
+          return;
+      }
+    }
     this.#resumeUnmatchedBaseline();
   }
 

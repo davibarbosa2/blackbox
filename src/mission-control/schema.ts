@@ -7,6 +7,14 @@ const evidenceReferenceSchema = z.strictObject({
 
 const activityTraceSchema = z.strictObject({
   durationMs: z.number().int().nonnegative().nullable(),
+  outcome: z.enum([
+    "PENDING",
+    "SUCCEEDED",
+    "DELIVERY_UNCONFIRMED",
+    "DENIED",
+    "FAILED",
+    "RESPONSE_RECORDED",
+  ]),
   result: z.string().min(1),
   safeArguments: z
     .array(

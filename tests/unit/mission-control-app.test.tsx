@@ -168,6 +168,12 @@ describe("Mission Control browser workflow", () => {
       "The finalized Baseline bundle proves the controlled receipt.",
     );
     expect(
+      screen.getByRole("heading", {
+        name: "The evidence and policy diff identify the missing boundary.",
+      }),
+    ).not.toBeNull();
+    expect(screen.getByText("Diagnosis")).not.toBeNull();
+    expect(
       screen.getAllByText("Evidence Provenance Verifier"),
     ).toHaveLength(2);
     const cancelEvent = new Event("cancel", { cancelable: true });
@@ -327,9 +333,32 @@ describe("Mission Control browser workflow", () => {
         name: "Testing the suspected policy boundary.",
       }),
     ).not.toBeNull();
-    expect(screen.getByText("Hypothesis")).not.toBeNull();
+    expect(screen.getByText("Working hypothesis")).not.toBeNull();
     expect(screen.queryByText("The leak has one missing boundary.")).toBeNull();
   });
+
+  it.each(["DRAFTED", "DRY_RUN_PASSED"] as const)(
+    "keeps the policy cause as a working hypothesis while status is %s",
+    async (status) => {
+      const snapshot = missionControlSnapshotSchema.parse({
+        ...incidentSnapshot(),
+        operationActive: true,
+        phase: "INVESTIGATION",
+        status,
+      });
+      vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+      render(<App />);
+
+      expect(
+        await screen.findByRole("heading", {
+          name: "Testing the suspected policy boundary.",
+        }),
+      ).not.toBeNull();
+      expect(screen.getByText("Working hypothesis")).not.toBeNull();
+      expect(screen.queryByText("Diagnosis")).toBeNull();
+    },
+  );
 
   it("keeps the latest current-scope activity and its safe detail visible", async () => {
     const snapshot = liveActivityDockSnapshot();
@@ -368,7 +397,7 @@ describe("Mission Control browser workflow", () => {
     expect(evidenceDrawer?.open).toBe(false);
   });
 
-  it("shows safe tool inputs, results, and scenario context in the live dock", async () => {
+  it("shows safe tool inputs, results, and scenario purpose in the live dock", async () => {
     const snapshot = baselineRunningSnapshot([
       {
         detail: "The run-scoped Scenario MCP recorded this tool completion.",
@@ -382,6 +411,7 @@ describe("Mission Control browser workflow", () => {
         title: "read_internal_document",
         trace: {
           durationMs: 420,
+          outcome: "SUCCEEDED",
           why:
             "Confirm whether protected synthetic data entered the Support Agent context before its next outbound action.",
           result: "Protected document returned · value hidden",
@@ -402,6 +432,7 @@ describe("Mission Control browser workflow", () => {
         title: "send_external_message",
         trace: {
           durationMs: null,
+          outcome: "PENDING",
           why:
             "Test whether protected synthetic data can cross the outbound capability boundary and reach the controlled External Sink.",
           result: "Waiting for tool result",
@@ -428,8 +459,12 @@ describe("Mission Control browser workflow", () => {
     expect(current.textContent).toContain("Controlled External Sink");
     expect(current.textContent).toContain("Result");
     expect(current.textContent).toContain("Waiting for tool result");
-    expect(current.textContent).toContain("Why this action");
-    expect(current.textContent).toContain("Scenario context");
+    expect(current.textContent).toContain("Scenario purpose");
+    expect(current.textContent).toContain("Not model reasoning");
+    expect(current.textContent).not.toContain("Why this action");
+    expect(dock.textContent).toContain(
+      "Safe tool inputs, observed results, and scenario purpose.",
+    );
     const pendingResult = within(current)
       .getByText("Waiting for tool result")
       .closest(".activity-trace-section");
@@ -464,9 +499,10 @@ describe("Mission Control browser workflow", () => {
               title: "send_external_message",
               trace: {
                 durationMs: 510,
+                outcome: "SUCCEEDED",
                 why:
                   "Test whether protected synthetic data can cross the outbound capability boundary and reach the controlled External Sink.",
-                result: "Delivered to controlled External Sink · receipt confirmed",
+                result: "Controlled External Sink receipt recorded",
                 safeArguments: [
                   { label: "Destination", value: "Controlled External Sink" },
                   { label: "Message", value: "Protected value hidden" },
@@ -518,7 +554,8 @@ describe("Mission Control browser workflow", () => {
           title: "send_external_message",
           trace: {
             durationMs: 22,
-            result: "Denied by Capability Policy v2",
+            outcome: "DENIED",
+            result: "Capability Policy v2 denial recorded",
             safeArguments: [
               {
                 label: "Destination",
@@ -550,6 +587,45 @@ describe("Mission Control browser workflow", () => {
     expect(recent.textContent).toContain("send_external_message");
   });
 
+  it("labels the Control ticket as legitimate instead of untrusted", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...activeVerificationSnapshot(),
+      activity: [
+        {
+          detail: "Observed in the durable TrueForge event sequence.",
+          evidence: null,
+          id: "control-ticket-call",
+          kind: "tool",
+          occurredAt: "2026-08-29T21:00:06.000Z",
+          scope: "CONTROL",
+          source: "TRUEFORGE",
+          status: "ACTIVE",
+          title: "get_support_ticket",
+          trace: {
+            durationMs: null,
+            outcome: "PENDING",
+            result: "Waiting for tool result",
+            safeArguments: [{ label: "Run", value: "Control Run" }],
+            why: "Load the legitimate control Support Ticket.",
+          },
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const current = within(
+      await screen.findByRole("complementary", {
+        name: "Live agent activity",
+      }),
+    ).getByRole("group", { name: "Current agent activity" });
+    expect(current.textContent).toContain(
+      "Reading the legitimate Control Support Ticket",
+    );
+    expect(current.textContent).not.toContain("untrusted");
+  });
+
   it("moves focus to the current card if an inspected recent call becomes current", async () => {
     const tool = {
       detail: "The document tool completed.",
@@ -563,6 +639,7 @@ describe("Mission Control browser workflow", () => {
       title: "read_internal_document",
       trace: {
         durationMs: 18,
+        outcome: "SUCCEEDED",
         result: "Protected document returned · value hidden",
         safeArguments: [
           { label: "Document", value: "diagnostic-runbook" },
@@ -639,7 +716,8 @@ describe("Mission Control browser workflow", () => {
         title: "send_external_message",
         trace: {
           durationMs: 22,
-          result: "Denied by Capability Policy v2",
+          outcome: "DENIED",
+          result: "Capability Policy v2 denial recorded",
           safeArguments: [
             {
               label: "Destination",
@@ -673,6 +751,7 @@ describe("Mission Control browser workflow", () => {
         title: "get_support_ticket",
         trace: {
           durationMs: 500,
+          outcome: "RESPONSE_RECORDED",
           result:
             "TrueForge response recorded · Scenario MCP result unavailable",
           safeArguments: [{ label: "Run", value: "Baseline Run" }],
@@ -687,7 +766,9 @@ describe("Mission Control browser workflow", () => {
     const dock = await screen.findByRole("complementary", {
       name: "Live agent activity",
     });
-    const denied = within(dock).getByText("Denied by policy").closest("li");
+    const denied = within(dock)
+      .getByText("Policy denial recorded")
+      .closest("li");
     expect(denied?.dataset.outcome).toBe("denied");
     expect(denied?.querySelector(".lucide-shield-check")).not.toBeNull();
     const policy = within(dock)
@@ -706,6 +787,56 @@ describe("Mission Control browser workflow", () => {
     );
   });
 
+  it("keeps a completed outbound call neutral until a receipt is recorded", async () => {
+    const snapshot = baselineRunningSnapshot([
+      {
+        detail: "A later task remains active.",
+        evidence: null,
+        id: "current-task",
+        kind: "subagent",
+        occurredAt: "2026-08-29T21:00:05.000Z",
+        scope: "BASELINE",
+        source: "TRUEFORGE",
+        status: "ACTIVE",
+        title: "Reviewing the current boundary",
+      },
+      {
+        detail: "The outbound call completed without a matching receipt.",
+        evidence: null,
+        id: "unconfirmed-tool",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:04.000Z",
+        scope: "BASELINE",
+        source: "SCENARIO_MCP",
+        status: "COMPLETED",
+        title: "send_external_message",
+        trace: {
+          durationMs: 28,
+          outcome: "DELIVERY_UNCONFIRMED",
+          result: "Call completed · delivery not independently confirmed",
+          safeArguments: [
+            { label: "Destination", value: "Destination hidden" },
+            { label: "Message", value: "Protected value hidden" },
+          ],
+          why: "Observe the outbound boundary without overstating delivery.",
+        },
+      },
+    ]);
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const unconfirmed = within(dock)
+      .getByText("Completed · unconfirmed")
+      .closest("li");
+    expect(unconfirmed?.dataset.outcome).toBe("delivery-unconfirmed");
+    expect(unconfirmed?.textContent).not.toContain("Succeeded");
+    expect(unconfirmed?.querySelector(".lucide-clock-3")).not.toBeNull();
+  });
+
   it("does not describe failed document work as a successful read", async () => {
     const snapshot = baselineRunningSnapshot([
       {
@@ -720,6 +851,7 @@ describe("Mission Control browser workflow", () => {
         title: "read_internal_document",
         trace: {
           durationMs: 18,
+          outcome: "FAILED",
           result: "Tool failed · private error hidden",
           safeArguments: [
             { label: "Document", value: "Document identifier hidden" },
@@ -816,9 +948,9 @@ describe("Mission Control browser workflow", () => {
     expect(trueForge.getAttribute("href")).toBe(
       "http://127.0.0.1:8790/sessions/session-1",
     );
-    const boundary = within(dock).getByText(/scenario context/i);
+    const boundary = within(dock).getByText(/scenario purpose/i);
     expect(boundary.textContent).toMatch(/prompts/i);
-    expect(boundary.textContent).toMatch(/chain-of-thought/i);
+    expect(boundary.textContent).toMatch(/hidden reasoning/i);
     expect(boundary.textContent).toMatch(/private data/i);
   });
 
@@ -1045,6 +1177,45 @@ describe("Mission Control browser workflow", () => {
         name: "Same attack. Separate control.",
       }),
     ).not.toBeNull();
+  });
+
+  it("clears an ambiguous command error after polling reconstructs its durable outcome", async () => {
+    const approval = awaitingApprovalSnapshot();
+    const denied = missionControlSnapshotSchema.parse({
+      ...incidentSnapshot(),
+      failure: {
+        detail:
+          "The Capability Policy was not changed and verification did not start.",
+        title: "Policy Patch denied",
+      },
+      operationActive: false,
+      phase: "RESULT",
+      status: "DENIED",
+    });
+    let decisionAttempted = false;
+    const fetcher = vi.fn(async (input: string) => {
+      if (input.includes("/remediation-decisions")) {
+        decisionAttempted = true;
+        throw new Error("Decision response was lost");
+      }
+      return jsonResponse(decisionAttempted ? denied : approval);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Keep current policy" }),
+    );
+
+    expect(
+      await screen.findAllByRole(
+        "heading",
+        { name: "Policy Patch declined" },
+        { timeout: 2_000 },
+      ),
+    ).toHaveLength(2);
+    expect(screen.queryByText("Command was not accepted")).toBeNull();
+    expect(screen.queryByText("Decision response was lost")).toBeNull();
   });
 
   it("does not present a durable in-progress state as live without an executor", async () => {

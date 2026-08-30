@@ -138,6 +138,18 @@ export function App(): ReactNode {
     [command.active, refresh, snapshot],
   );
 
+  useEffect(() => {
+    if (
+      command.error === null ||
+      snapshot === null ||
+      snapshot.status === "READY" ||
+      snapshot.approval !== null
+    ) {
+      return;
+    }
+    setCommand(INITIAL_COMMAND_STATE);
+  }, [command.error, snapshot]);
+
   if (snapshot === null) {
     return (
       <LoadingView
@@ -148,10 +160,17 @@ export function App(): ReactNode {
     );
   }
 
+  const visibleCommand =
+    command.error !== null &&
+    snapshot.status !== "READY" &&
+    snapshot.approval === null
+      ? INITIAL_COMMAND_STATE
+      : command;
+
   if (snapshot.phase === "READY") {
     return (
       <OpeningView
-        command={command}
+        command={visibleCommand}
         connectionError={connectionError}
         onStart={() => void runCommand("START")}
         snapshot={snapshot}
@@ -162,13 +181,13 @@ export function App(): ReactNode {
   return (
     <>
       <MissionView
-        command={command}
+        command={visibleCommand}
         connectionError={connectionError}
         snapshot={snapshot}
       />
       {snapshot.approval === null ? null : (
         <ApprovalDialog
-          command={command}
+          command={visibleCommand}
           decisionPending={snapshot.decisionPending}
           onApprove={() => void runCommand("ALLOW")}
           onDeny={() => void runCommand("DENY")}
@@ -654,7 +673,7 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
           </div>
 
           <footer className="activity-dock-footer">
-            <p>Safe tool inputs, results, and scenario context. Prompts, private data, and raw chain-of-thought stay hidden.</p>
+            <p>Safe tool inputs, observed results, and scenario purpose. Prompts, private data, and hidden reasoning stay private.</p>
             {providerHref === null ? (
               <span><TrueForgeMark /> Powered by TrueForge</span>
             ) : (
@@ -913,7 +932,7 @@ function BaselineScene(props: SceneProps): ReactNode {
 
 function InvestigationScene(props: SceneProps): ReactNode {
   const awaitingApproval = props.snapshot.phase === "APPROVAL";
-  const diagnosisEstablished = props.snapshot.status !== "INVESTIGATING";
+  const diagnosisEstablished = props.snapshot.approval !== null;
   return (
     <section className="scene-grid investigation-scene" aria-labelledby="investigation-scene-title">
       <div className="causal-canvas breached-canvas">
@@ -922,7 +941,7 @@ function InvestigationScene(props: SceneProps): ReactNode {
             <p className="eyebrow">Breach reconstruction</p>
             <h2 id="investigation-scene-title">
               {diagnosisEstablished
-                ? "The evidence confirms a missing boundary."
+                ? "The evidence and policy diff identify the missing boundary."
                 : "Testing the suspected policy boundary."}
             </h2>
           </div>
@@ -930,11 +949,11 @@ function InvestigationScene(props: SceneProps): ReactNode {
         </div>
         <ScenarioPath mode="baseline" snapshot={props.snapshot} />
         <div className="diagnosis-line">
-          <span>{diagnosisEstablished ? "Diagnosis" : "Hypothesis"}</span>
+          <span>{diagnosisEstablished ? "Diagnosis" : "Working hypothesis"}</span>
           <strong>
             {diagnosisEstablished
-              ? "send_external_message had no destination allowlist. Policy remains unchanged until approval."
-              : "The Baseline Run proves the leak. TrueForge is testing whether a destination allowlist is the narrowest valid fix."}
+              ? "send_external_message allowed any destination. The proposed allowlist is not active until approval."
+              : "The finalized Baseline proves the leak. TrueForge is testing whether outbound destination restrictions are the narrowest valid fix."}
           </strong>
         </div>
       </div>
@@ -1415,11 +1434,18 @@ function ActivityItem(props: ActivityItemProps): ReactNode {
   const item = props.item;
   const deniedByPolicy = activityDeniedByPolicy(item);
   const responseOnly = activityResponseRecorded(item);
+  const deliveryUnconfirmed = activityDeliveryUnconfirmed(item);
   return (
     <li
       className="activity-item"
       data-outcome={
-        deniedByPolicy ? "denied" : responseOnly ? "response-recorded" : undefined
+        deniedByPolicy
+          ? "denied"
+          : responseOnly
+            ? "response-recorded"
+            : deliveryUnconfirmed
+              ? "delivery-unconfirmed"
+              : undefined
       }
       data-status={item.status.toLowerCase()}
     >
@@ -1428,6 +1454,8 @@ function ActivityItem(props: ActivityItemProps): ReactNode {
           ? <ShieldCheck size={10} />
           : responseOnly
             ? <ReceiptText size={10} />
+            : deliveryUnconfirmed
+              ? <Clock3 size={10} />
           : item.status === "COMPLETED"
           ? <Check size={10} />
           : item.status === "FAILED"
@@ -1485,7 +1513,7 @@ interface ToolTraceProps {
 }
 
 function ToolTrace(props: ToolTraceProps): ReactNode {
-  const waitingForResult = props.trace.result === "Waiting for tool result";
+  const waitingForResult = props.trace.outcome === "PENDING";
   return (
     <div
       aria-label={`Safe details for ${props.toolName}`}
@@ -1535,8 +1563,8 @@ function ToolTrace(props: ToolTraceProps): ReactNode {
       </div>
       <div className="activity-trace-rationale">
         <span>
-          <strong>Why this action</strong>
-          <small>Scenario context</small>
+          <strong>Scenario purpose</strong>
+          <small>Not model reasoning</small>
         </span>
         <p>{props.trace.why}</p>
       </div>
@@ -1919,6 +1947,15 @@ function friendlyActivityTitle(
   const responseOnly = activityResponseRecorded(item);
   switch (item.title) {
     case "get_support_ticket":
+      if (item.scope === "CONTROL") {
+        if (item.status === "ACTIVE") {
+          return "Reading the legitimate Control Support Ticket";
+        }
+        if (responseOnly) return "Control Support Ticket call recorded";
+        return item.status === "COMPLETED"
+          ? "Read the legitimate Control Support Ticket"
+          : "Tried to read the legitimate Control Support Ticket";
+      }
       if (item.status === "ACTIVE") {
         return "Reading the untrusted Support Ticket";
       }
@@ -2153,6 +2190,9 @@ function activityStatusIcon(
   if (activityResponseRecorded(item)) {
     return <ReceiptText aria-hidden="true" size={12} />;
   }
+  if (activityDeliveryUnconfirmed(item)) {
+    return <Clock3 aria-hidden="true" size={12} />;
+  }
   if (item.status === "COMPLETED") {
     return <Check aria-hidden="true" size={12} />;
   }
@@ -2164,18 +2204,23 @@ function activityStatusIcon(
 
 function activityStatusLabel(item: MissionControlActivity): string {
   if (item.status === "ACTIVE") return "Running";
-  if (activityDeniedByPolicy(item)) return "Denied by policy";
+  if (activityDeniedByPolicy(item)) return "Policy denial recorded";
   if (activityResponseRecorded(item)) return "Response recorded";
+  if (activityDeliveryUnconfirmed(item)) return "Completed · unconfirmed";
   if (item.status === "FAILED") return "Failed";
   return item.kind === "tool" ? "Succeeded" : "Completed";
 }
 
 function activityDeniedByPolicy(item: MissionControlActivity): boolean {
-  return item.trace?.result.startsWith("Denied by Capability Policy") === true;
+  return item.trace?.outcome === "DENIED";
 }
 
 function activityResponseRecorded(item: MissionControlActivity): boolean {
-  return item.trace?.result.startsWith("TrueForge response recorded") === true;
+  return item.trace?.outcome === "RESPONSE_RECORDED";
+}
+
+function activityDeliveryUnconfirmed(item: MissionControlActivity): boolean {
+  return item.trace?.outcome === "DELIVERY_UNCONFIRMED";
 }
 
 function scopeLabel(

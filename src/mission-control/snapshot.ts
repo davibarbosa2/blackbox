@@ -501,6 +501,7 @@ function createToolTrace(
   );
   return {
     durationMs: toolDurationMs(call, completion, response),
+    outcome: toolTraceOutcome(completion, timeline, scope, unmatchedStatus),
     result:
       completion === undefined
         ? unmatchedStatus === "COMPLETED"
@@ -608,7 +609,57 @@ function safeDestination(
   scope: MissionControlActivity["scope"],
 ): string {
   if (completion === undefined) return "Destination pending validation";
-  const receiptConfirmed =
+  if (hasConfirmedReceipt(completion, timeline, scope)) {
+    return scope === "CONTROL"
+      ? "Trusted Destination"
+      : "Controlled External Sink";
+  }
+  return deniedPolicy(completion, timeline) !== undefined
+    ? "External destination · blocked before delivery"
+    : "Destination hidden";
+}
+
+function toolTraceOutcome(
+  completion: ToolCompletedRecord | undefined,
+  timeline: readonly EvidenceRecord[],
+  scope: MissionControlActivity["scope"],
+  unmatchedStatus: MissionControlActivity["status"] | undefined,
+): NonNullable<MissionControlActivity["trace"]>["outcome"] {
+  if (completion === undefined) {
+    if (unmatchedStatus === "COMPLETED") return "RESPONSE_RECORDED";
+    if (unmatchedStatus === "FAILED") return "FAILED";
+    return "PENDING";
+  }
+  if (completion.succeeded) {
+    return completion.toolName === "send_external_message" &&
+      !hasConfirmedReceipt(completion, timeline, scope)
+      ? "DELIVERY_UNCONFIRMED"
+      : "SUCCEEDED";
+  }
+  return deniedPolicy(completion, timeline) === undefined ? "FAILED" : "DENIED";
+}
+
+function deniedPolicy(
+  completion: ToolCompletedRecord,
+  timeline: readonly EvidenceRecord[],
+): Extract<EvidenceRecord, { type: "policy.evaluated" }> | undefined {
+  return timeline.find(
+    (record): record is Extract<
+      EvidenceRecord,
+      { type: "policy.evaluated" }
+    > =>
+      record.type === "policy.evaluated" &&
+      record.transactionId === completion.transactionId &&
+      record.decision === "deny",
+  );
+}
+
+function hasConfirmedReceipt(
+  completion: ToolCompletedRecord,
+  timeline: readonly EvidenceRecord[],
+  scope: MissionControlActivity["scope"],
+): boolean {
+  return (
     completion.requestId !== undefined &&
     timeline.some((record) =>
       scope === "CONTROL"
@@ -616,21 +667,8 @@ function safeDestination(
           record.requestId === completion.requestId
         : record.type === "message.received" &&
           record.requestId === completion.requestId,
-    );
-  if (receiptConfirmed) {
-    return scope === "CONTROL"
-      ? "Trusted Destination"
-      : "Controlled External Sink";
-  }
-  const policyDenied = timeline.some(
-    (record) =>
-      record.type === "policy.evaluated" &&
-      record.transactionId === completion.transactionId &&
-      record.decision === "deny",
+    )
   );
-  return policyDenied
-    ? "External destination · blocked before delivery"
-    : "Destination hidden";
 }
 
 function safeToolResult(
@@ -639,17 +677,10 @@ function safeToolResult(
   scope: MissionControlActivity["scope"],
 ): string {
   if (!completion.succeeded) {
-    const policy = timeline.find(
-      (record): record is Extract<
-        EvidenceRecord,
-        { type: "policy.evaluated" }
-      > =>
-        record.type === "policy.evaluated" &&
-        record.transactionId === completion.transactionId,
-    );
-    return policy?.decision === "deny"
-      ? `Denied by Capability Policy v${policy.policyVersion}`
-      : "Tool failed · private error hidden";
+    const policy = deniedPolicy(completion, timeline);
+    return policy === undefined
+      ? "Tool failed · private error hidden"
+      : `Capability Policy v${policy.policyVersion} denial recorded`;
   }
   if (completion.toolName === "get_support_ticket") {
     return "Support Ticket loaded";
@@ -661,21 +692,12 @@ function safeToolResult(
     return "Protected document returned · value hidden";
   }
 
-  const receiptConfirmed =
-    completion.requestId !== undefined &&
-    timeline.some((record) =>
-      scope === "CONTROL"
-        ? record.type === "message.received_trusted" &&
-          record.requestId === completion.requestId
-        : record.type === "message.received" &&
-          record.requestId === completion.requestId,
-    );
-  if (!receiptConfirmed) {
+  if (!hasConfirmedReceipt(completion, timeline, scope)) {
     return "Call completed · delivery not independently confirmed";
   }
   return scope === "CONTROL"
-    ? "Delivered to Trusted Destination · receipt confirmed"
-    : "Delivered to controlled External Sink · receipt confirmed";
+    ? "Trusted Destination receipt recorded"
+    : "Controlled External Sink receipt recorded";
 }
 
 function toolDurationMs(
@@ -1107,6 +1129,7 @@ function createVerification(
   }
   const replay = comparison?.replay ?? null;
   const control = comparison?.control ?? null;
+  const interrupted = remediation.state === "VALIDATION_FAILED";
   return {
     control: {
       result: control?.result ?? null,
@@ -1118,7 +1141,9 @@ function createVerification(
             : "INCONCLUSIVE"
           : remediation.state === "VERIFYING" && replay !== null
             ? "ACTIVE"
-            : "WAITING",
+            : interrupted
+              ? "INCONCLUSIVE"
+              : "WAITING",
     },
     policyReadback: {
       hash: remediation.policyReadback.hash,
@@ -1135,7 +1160,9 @@ function createVerification(
             : "INCONCLUSIVE"
           : remediation.state === "VERIFYING"
             ? "ACTIVE"
-            : "WAITING",
+            : interrupted
+              ? "INCONCLUSIVE"
+              : "WAITING",
     },
   };
 }
@@ -1166,7 +1193,7 @@ function readFailure(
   const baseline = readBaselineBundle(run);
   if (baseline?.verdict === "INCONCLUSIVE") {
     return {
-      detail: baseline.completeness.missing.join(", "),
+      detail: baselineFailureDetail(run),
       title: "Baseline evidence was inconclusive",
     };
   }
@@ -1181,6 +1208,19 @@ function readFailure(
     };
   }
   return null;
+}
+
+function baselineFailureDetail(run: EvidenceRunRead | undefined): string {
+  const stage = run?.timeline
+    .findLast((record) => record.type === "run.failed")
+    ?.stage.toLowerCase();
+  if (stage === "trueforge") {
+    return "TrueForge execution stopped before the Baseline Run completed. The Evidence Bundle is inconclusive; no breach is claimed. Inspect the server log for the private cause.";
+  }
+  if (stage === "victim-agent") {
+    return "The Support Agent stopped before completing the required tool workflow. The Evidence Bundle is inconclusive; no breach is claimed.";
+  }
+  return "The Baseline Run ended without all required correlated evidence. The Evidence Bundle is inconclusive; no breach is claimed.";
 }
 
 function safeValidationFailure(
