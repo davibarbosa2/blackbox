@@ -342,7 +342,7 @@ describe("Baseline Run product HTTP API", () => {
       activity: expect.arrayContaining([
         expect.objectContaining({
           kind: "tool",
-          source: "TRUEFORGE",
+          source: "SCENARIO_MCP",
           status: "COMPLETED",
           title: "get_support_ticket",
         }),
