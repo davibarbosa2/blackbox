@@ -34,6 +34,7 @@ export function createMissionControlSnapshot(
   incident: DurableIncidentRead | undefined,
   baselineRunning: boolean,
   decisionPending: boolean,
+  operationActive: boolean,
   trueForgeUrl?: string,
 ): MissionControlSnapshot {
   const baseline = readBaselineBundle(baselineRun);
@@ -113,6 +114,7 @@ export function createMissionControlSnapshot(
           ? null
           : { id: baselineRun.manifest.incidentId, status: "OPEN" }
         : { id: incident.incidentId, status: incident.incidentStatus },
+    operationActive,
     phase: phaseForStatus(status),
     status,
     verification,
@@ -178,20 +180,25 @@ function timelineActivity(
   finalizedTitle: string,
 ): MissionControlActivity[] {
   const activity: MissionControlActivity[] = [];
-  const completedToolNames = new Set(
-    timeline
-      .filter((record) => record.type === "tool.completed")
-      .map((record) => record.toolName),
-  );
+  const unmatchedCompletedToolCounts = new Map<string, number>();
+  for (const record of timeline) {
+    if (record.type !== "tool.completed") continue;
+    unmatchedCompletedToolCounts.set(
+      record.toolName,
+      (unmatchedCompletedToolCounts.get(record.toolName) ?? 0) + 1,
+    );
+  }
   const currentStateId = timeline
     .filter((record) => record.type === "run.state_changed")
     .at(-1)?.id;
   for (const record of timeline) {
-    if (
-      record.type === "tool.called" &&
-      completedToolNames.has(record.toolName)
-    ) {
-      continue;
+    if (record.type === "tool.called") {
+      const completedCount =
+        unmatchedCompletedToolCounts.get(record.toolName) ?? 0;
+      if (completedCount > 0) {
+        unmatchedCompletedToolCounts.set(record.toolName, completedCount - 1);
+        continue;
+      }
     }
     const item = activityFromRecord(
       record,
@@ -261,14 +268,14 @@ function activityFromRecord(
   if (record.type === "tool.completed") {
     return {
       detail: record.succeeded
-        ? "The Support Agent completed this Scenario tool through the durable MCP boundary."
-        : "The Scenario tool returned a failure; its private input and output remain hidden.",
+        ? "The run-scoped Scenario MCP recorded this tool completion."
+        : "The run-scoped Scenario MCP recorded a tool failure; its private payload remains hidden.",
       evidence,
       id: record.id,
       kind: "tool",
       occurredAt: record.occurredAt,
       scope,
-      source: "TRUEFORGE",
+      source: "SCENARIO_MCP",
       status: record.succeeded ? "COMPLETED" : "FAILED",
       title: record.toolName,
     };
@@ -456,10 +463,10 @@ function activityFromInvestigationMilestone(
       (progressKinds.has("POLICY_ACTION_OBSERVED") || investigationComplete));
   const display = {
     ANALYSIS_EXECUTION_COMPLETED: {
-      detail: "The isolated Daytona analysis command completed; raw output remains in evidence, not this UI.",
+      detail: "TrueForge returned a response for the isolated analysis command; BLACKBOX validates it before using it as evidence.",
       kind: "sandbox" as const,
       source: "DAYTONA" as const,
-      title: "Sandbox evidence analysis completed",
+      title: "Sandbox analysis response received",
     },
     ANALYSIS_EXECUTION_STARTED: {
       detail: "The investigator started an isolated evidence analysis command in Daytona.",
@@ -474,10 +481,10 @@ function activityFromInvestigationMilestone(
       title: "Daytona analysis workspace created",
     },
     EVIDENCE_REVIEW_COMPLETED: {
-      detail: "The focused evidence-provenance review completed in the TrueForge session.",
+      detail: "The focused evidence-provenance thread returned; BLACKBOX validates its structured response before use.",
       kind: "subagent" as const,
       source: "TRUEFORGE" as const,
-      title: "Evidence Provenance Verifier",
+      title: "Evidence review response received",
     },
     EVIDENCE_REVIEW_STARTED: {
       detail: "A focused subagent is checking that the diagnosis traces to finalized evidence.",
@@ -498,10 +505,10 @@ function activityFromInvestigationMilestone(
       title: "Policy Patch proposal observed",
     },
     POLICY_REVIEW_COMPLETED: {
-      detail: "The focused policy review completed without widening protected-document access.",
+      detail: "The focused policy-review thread returned; BLACKBOX validates its proposed boundary before use.",
       kind: "subagent" as const,
       source: "TRUEFORGE" as const,
-      title: "Policy Patch Reviewer",
+      title: "Policy review response received",
     },
     POLICY_REVIEW_STARTED: {
       detail: "A focused subagent is reviewing the narrowest defensible Capability Policy change.",
@@ -510,10 +517,10 @@ function activityFromInvestigationMilestone(
       title: "Policy Patch review started",
     },
     POLICY_PATCH_DRAFTED: {
-      detail: "The investigator drafted a scoped Policy Patch; it is not active and cannot apply without approval.",
+      detail: "TrueForge emitted a candidate Policy Patch action; BLACKBOX is validating its scope and evidence before approval.",
       kind: "phase" as const,
       source: "TRUEFORGE" as const,
-      title: "Policy Patch drafted",
+      title: "Candidate Policy Patch action emitted",
     },
     TURN_STARTED: {
       detail: "TrueForge started the evidence-backed Incident investigation turn.",

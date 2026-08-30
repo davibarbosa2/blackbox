@@ -333,6 +333,7 @@ describe("Incident coordinator observability", () => {
           trueForgeSessionId: "session-investigation",
           trueForgeUrl: "http://127.0.0.1:8790",
         },
+        operationActive: true,
         status: "INVESTIGATING",
       });
     });
@@ -366,6 +367,7 @@ describe("Incident coordinator observability", () => {
         }),
       ]),
     );
+    expect(coordinator.readMissionControl().operationActive).toBe(false);
     await coordinator.shutdown();
     remediations.close();
   });

@@ -366,6 +366,38 @@ describe("TrueForge Incident investigation", () => {
     expect(JSON.stringify(milestones)).not.toContain("Investigate the supplied");
   });
 
+  it("does not treat an approval for another call as the Policy Patch boundary", async () => {
+    const wrongApproval = {
+      ...APPROVAL_REQUIRED,
+      tool_calls: [
+        { id: "call-not-the-policy-patch", source_event_id: APPLY_CALL.id },
+      ],
+    };
+    const events = EVENTS.map((event) => {
+      if (event.id === APPROVAL_REQUIRED.id) return wrongApproval;
+      if (event.id === TURN_DONE.id) {
+        return {
+          ...TURN_DONE,
+          state: { ...TURN_DONE.state, required_actions: [wrongApproval] },
+        };
+      }
+      return event;
+    });
+    const milestones: Array<{ kind: string }> = [];
+
+    await executeTrueForgeInvestigation(
+      createClient(events),
+      "blackbox-investigator",
+      "Investigate finalized evidence.",
+      undefined,
+      (milestone) => milestones.push(milestone),
+    );
+
+    expect(milestones.some(({ kind }) => kind === "POLICY_ACTION_OBSERVED")).toBe(
+      false,
+    );
+  });
+
   it("rejects a marker that was not produced by a created Python artifact", async () => {
     const events = EVENTS.map((event) =>
       event.id === EXEC_CALL.id

@@ -59,14 +59,17 @@ export function App(): ReactNode {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [command, setCommand] = useState<CommandState>(INITIAL_COMMAND_STATE);
   const [retrying, setRetrying] = useState(false);
+  const refreshSequence = useRef(0);
 
   const refresh = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    const requestId = ++refreshSequence.current;
     try {
       const next = await readMissionControl(signal);
+      if (requestId !== refreshSequence.current) return;
       setSnapshot(next);
       setConnectionError(null);
     } catch (cause) {
-      if (signal?.aborted) return;
+      if (signal?.aborted || requestId !== refreshSequence.current) return;
       setConnectionError(
         cause instanceof Error
           ? cause.message
@@ -311,6 +314,21 @@ interface MissionViewProps {
 
 function MissionView(props: MissionViewProps): ReactNode {
   const incidentId = props.snapshot.incident?.id ?? "unknown";
+  const [desktopDock, setDesktopDock] = useState(
+    () => window.matchMedia?.("(min-width: 1440px)").matches ?? true,
+  );
+  const [activityOverride, setActivityOverride] = useState<boolean | null>(null);
+  useEffect(() => {
+    const query = window.matchMedia?.("(min-width: 1440px)");
+    if (query === undefined) return;
+    const updateDockMode = (): void => setDesktopDock(query.matches);
+    updateDockMode();
+    query.addEventListener?.("change", updateDockMode);
+    return () => query.removeEventListener?.("change", updateDockMode);
+  }, []);
+  const activityExpanded = activityOverride ?? desktopDock;
+  const approvalOpen = props.snapshot.approval !== null;
+  const showActivityPanel = activityExpanded && !approvalOpen;
   return (
     <div className="mission-shell" data-phase={props.snapshot.phase.toLowerCase()}>
       <header className="mission-header">
@@ -334,18 +352,258 @@ function MissionView(props: MissionViewProps): ReactNode {
 
       <JourneyRail snapshot={props.snapshot} />
 
-      <main className="mission-main">
-        <NowStrip snapshot={props.snapshot} />
-        <ActiveScene snapshot={props.snapshot} />
-        {props.command.error === null || props.snapshot.approval !== null ? null : (
-          <FailureNotice
-            detail={props.command.error}
-            title="Command was not accepted"
+      <div className={`mission-workspace${showActivityPanel ? " activity-expanded" : ""}`}>
+        <main className="mission-main">
+          <NowStrip
+            connectionError={props.connectionError}
+            snapshot={props.snapshot}
           />
-        )}
-        <EvidenceDrawer snapshot={props.snapshot} />
-      </main>
+          <ActiveScene snapshot={props.snapshot} />
+          {props.command.error === null || props.snapshot.approval !== null ? null : (
+            <FailureNotice
+              detail={props.command.error}
+              title="Command was not accepted"
+            />
+          )}
+          <EvidenceDrawer snapshot={props.snapshot} />
+        </main>
+        <AgentActivityDock
+          connectionError={props.connectionError}
+          expanded={showActivityPanel}
+          onCollapse={() => setActivityOverride(false)}
+          onExpand={() => setActivityOverride(true)}
+          snapshot={props.snapshot}
+        />
+      </div>
     </div>
+  );
+}
+
+interface AgentActivityDockProps {
+  connectionError: string | null;
+  expanded: boolean;
+  onCollapse(): void;
+  onExpand(): void;
+  snapshot: MissionControlSnapshot;
+}
+
+function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
+  const capsuleRef = useRef<HTMLButtonElement>(null);
+  const minimizeRef = useRef<HTMLButtonElement>(null);
+  const focusAfterToggle = useRef<"capsule" | "minimize" | null>(null);
+  const activities = dockActivities(props.snapshot);
+  const current =
+    activities.find((item) => item.status === "ACTIVE") ??
+    activities[0] ??
+    null;
+  const recent = activities
+    .filter((item) => item.id !== current?.id)
+    .slice(0, 3);
+  const live =
+    props.connectionError === null && isLiveSnapshot(props.snapshot);
+  const currentLive = live && current?.status === "ACTIVE";
+  const activeCount = activities.filter(
+    (item) => item.status === "ACTIVE",
+  ).length;
+  const providerHref = trueForgeHref(props.snapshot);
+  const copy = sceneCopy(props.snapshot);
+  const currentTitle = current === null
+    ? copy.title
+    : friendlyActivityTitle(current.title);
+  const currentDetail = current?.detail ?? copy.description;
+  const announcement = `${activityDockState(props.snapshot, props.connectionError)}. ${currentTitle}. ${currentDetail}`;
+
+  useEffect(() => {
+    const target = focusAfterToggle.current;
+    if (target === null) return;
+    focusAfterToggle.current = null;
+    if (target === "capsule" && !props.expanded) capsuleRef.current?.focus();
+    if (target === "minimize" && props.expanded) minimizeRef.current?.focus();
+  }, [props.expanded]);
+
+  const expand = (): void => {
+    focusAfterToggle.current = "minimize";
+    props.onExpand();
+  };
+  const collapse = (): void => {
+    focusAfterToggle.current = "capsule";
+    props.onCollapse();
+  };
+
+  if (!props.expanded) {
+    return (
+      <>
+        <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">
+          {announcement}
+        </span>
+        <div
+          className="agent-activity-dock"
+          data-connected={props.connectionError === null}
+        >
+          <button
+            aria-controls="agent-activity-panel"
+            aria-describedby="agent-activity-capsule-description"
+            aria-expanded="false"
+            aria-label="Open agent activity"
+            className="activity-dock-capsule"
+            onClick={expand}
+            ref={capsuleRef}
+            type="button"
+          >
+            <span className="activity-capsule-mark">
+              <TrueForgeMark />
+              <SignalMark active={live} />
+            </span>
+            <span>
+              <small>{activityDockState(props.snapshot, props.connectionError)}</small>
+              <strong>{currentTitle}</strong>
+            </span>
+            <Activity aria-hidden="true" size={15} />
+            <span className="sr-only" id="agent-activity-capsule-description">
+              {activityDockState(props.snapshot, props.connectionError)}. {currentTitle}.
+            </span>
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <span aria-atomic="true" aria-live="polite" className="sr-only" role="status">
+        {announcement}
+      </span>
+      <aside
+        aria-label="Live agent activity"
+        className="agent-activity-dock"
+        data-connected={props.connectionError === null}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          focusAfterToggle.current = "capsule";
+          props.onCollapse();
+        }}
+      >
+        <div className="agent-activity-panel" id="agent-activity-panel">
+          <header className="activity-dock-header">
+            <span className="activity-dock-brand">
+              <TrueForgeMark />
+              <span>
+                <strong>Live agent activity</strong>
+                <small>TrueForge runtime · durable events</small>
+              </span>
+            </span>
+            <button
+              aria-controls="agent-activity-panel"
+              aria-expanded="true"
+              aria-label="Minimize agent activity"
+              className="activity-dock-control"
+              onClick={collapse}
+              ref={minimizeRef}
+              title="Minimize activity"
+              type="button"
+            >
+              <Minus aria-hidden="true" size={15} />
+            </button>
+          </header>
+
+          <div className="activity-dock-state">
+            <span>
+              <SignalMark active={live} />
+              <strong>{activityDockState(props.snapshot, props.connectionError)}</strong>
+            </span>
+            <small>
+              {activeCount > 0
+                ? `${activeCount} active`
+                : `${props.snapshot.activity.length} durable ${pluralize(props.snapshot.activity.length, "record")}`}
+            </small>
+          </div>
+
+          <div className="activity-dock-log">
+            <div
+              aria-label="Current agent activity"
+              className="activity-current-card"
+              data-live={currentLive || undefined}
+              role="group"
+            >
+              <span className="activity-current-label">
+                {props.connectionError === null
+                  ? currentLive
+                    ? "In progress"
+                    : live
+                      ? "Latest durable action"
+                      : "Last durable action"
+                  : "Last durable update"}
+              </span>
+              <div className="activity-current-title">
+                <span className="activity-current-icon" aria-hidden="true">
+                  {current === null
+                    ? <Activity size={15} />
+                    : activityStatusIcon(current, currentLive)}
+                </span>
+                <div>
+                  <strong>{currentTitle}</strong>
+                  <p>{currentDetail}</p>
+                </div>
+              </div>
+              <span className="activity-current-meta">
+                <b>{current === null ? "BLACKBOX" : sourceLabel(current.source)}</b>
+                <i aria-hidden="true" />
+                <span>{current === null ? scopeLabel(props.snapshot.phase) : scopeLabel(current.scope)}</span>
+                {current?.occurredAt === null || current === null ? null : (
+                  <time dateTime={current.occurredAt}>{formatTime(current.occurredAt)}</time>
+                )}
+              </span>
+            </div>
+
+            <div
+              aria-label="Recent durable agent activity"
+              aria-live="off"
+              role="log"
+            >
+              <div className="activity-recent-heading">
+                <strong>Recent activity</strong>
+                <span>Newest first</span>
+              </div>
+              {recent.length === 0 ? (
+                <p className="activity-recent-empty">
+                  New durable actions will appear here as the run advances.
+                </p>
+              ) : (
+                <ol className="activity-dock-list">
+                  {recent.map((item) => (
+                    <ActivityItem
+                      compact
+                      item={item}
+                      key={item.id}
+                      showScope
+                    />
+                  ))}
+                </ol>
+              )}
+            </div>
+          </div>
+
+          <footer className="activity-dock-footer">
+            <p>Sanitized durable actions only. Prompts, reasoning, tool payloads, and private data stay hidden in this dock.</p>
+            {providerHref === null ? (
+              <span><TrueForgeMark /> Powered by TrueForge</span>
+            ) : (
+              <a
+                aria-label="Open in TrueForge agent session"
+                href={providerHref}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <TrueForgeMark />
+                <span>Open in TrueForge</span>
+                <ExternalLink aria-hidden="true" size={11} />
+              </a>
+            )}
+          </footer>
+        </div>
+      </aside>
+    </>
   );
 }
 
@@ -424,45 +682,90 @@ function JourneyRail(props: JourneyRailProps): ReactNode {
 }
 
 interface NowStripProps {
+  connectionError: string | null;
   snapshot: MissionControlSnapshot;
 }
 
 function NowStrip(props: NowStripProps): ReactNode {
   const copy = sceneCopy(props.snapshot);
+  const connectionInterrupted = props.connectionError !== null;
+  const operationLive =
+    !connectionInterrupted &&
+    copy.tone === "live" &&
+    props.snapshot.operationActive;
+  const operationPaused =
+    !connectionInterrupted &&
+    copy.tone === "live" &&
+    !props.snapshot.operationActive;
+  const latestOccurredAt = props.snapshot.activity.reduce<string | null>(
+    (latest, item) =>
+      item.occurredAt !== null && (latest === null || item.occurredAt > latest)
+        ? item.occurredAt
+        : latest,
+    null,
+  );
   const progressSignature = `${props.snapshot.phase}:${props.snapshot.status}:${props.snapshot.activity.map((item) => `${item.id}:${item.status}`).join("|")}`;
-  const [quietSeconds, setQuietSeconds] = useState(0);
+  const [observedAt, setObservedAt] = useState(() => Date.now());
   useEffect(() => {
-    setQuietSeconds(0);
-    if (copy.tone !== "live") return;
-    const startedAt = Date.now();
+    setObservedAt(Date.now());
+    if (!operationLive) return;
     const interval = window.setInterval(() => {
-      setQuietSeconds(Math.floor((Date.now() - startedAt) / 1_000));
+      setObservedAt(Date.now());
     }, 1_000);
     return () => window.clearInterval(interval);
-  }, [copy.tone, progressSignature]);
-  const quietlyWaiting = copy.tone === "live" && quietSeconds >= 12;
+  }, [operationLive, progressSignature]);
+  const quietSeconds = latestOccurredAt === null
+    ? null
+    : Math.max(
+        0,
+        Math.floor((observedAt - Date.parse(latestOccurredAt)) / 1_000),
+      );
+  const quietlyWorking =
+    operationLive && quietSeconds !== null && quietSeconds >= 12;
+  const displayTone = connectionInterrupted || operationPaused
+    ? "warning"
+    : copy.tone;
   return (
-    <section className={`now-strip tone-${copy.tone}`}>
-      <span aria-atomic="true" aria-live="polite" className="sr-only">
-        {quietlyWaiting
-          ? `Waiting for the next durable update. ${copy.title}`
-          : `${copy.eyebrow}. ${copy.title}`}
-      </span>
+    <section className={`now-strip tone-${displayTone}`}>
       <div className="now-label">
-        <SignalMark active={copy.tone === "live" && !quietlyWaiting} />
-        <span>{quietlyWaiting ? "Waiting" : "Now"}</span>
+        <SignalMark active={operationLive} />
+        <span>
+          {connectionInterrupted
+            ? "Offline"
+            : operationPaused
+              ? "Paused"
+              : quietlyWorking
+                ? "Working"
+                : "Now"}
+        </span>
       </div>
       <div className="now-copy">
         <p className="eyebrow">{copy.eyebrow}</p>
-        <h1>{copy.title}</h1>
+        <h1>
+          {connectionInterrupted
+            ? "Live updates interrupted"
+            : operationPaused
+              ? "Durable work is paused"
+              : copy.title}
+        </h1>
         <p>
-          {quietlyWaiting
-            ? `Still waiting for the next durable update (${quietSeconds}s). ${copy.description}`
-            : copy.description}
+          {connectionInterrupted
+            ? "Showing the last durable state. Reconnect to resume live activity."
+            : operationPaused
+              ? "No active executor is attached. The last durable state remains visible for recovery."
+              : quietlyWorking
+                ? `No new durable action for ${formatElapsed(quietSeconds)}. ${copy.description}`
+                : copy.description}
         </p>
       </div>
-      <StatusPill tone={copy.tone}>
-        {quietlyWaiting ? `Waiting · ${quietSeconds}s` : statusLabel(props.snapshot.status)}
+      <StatusPill tone={displayTone}>
+        {connectionInterrupted
+          ? "Disconnected"
+          : operationPaused
+            ? "No active executor"
+            : quietlyWorking
+              ? `Working · ${formatElapsed(quietSeconds)}`
+              : statusLabel(props.snapshot.status)}
       </StatusPill>
     </section>
   );
@@ -554,7 +857,10 @@ function InvestigationScene(props: SceneProps): ReactNode {
         <ScenarioPath mode="baseline" snapshot={props.snapshot} />
         <div className="diagnosis-line">
           <span>Diagnosis</span>
-          <strong>Outbound messages can target any destination.</strong>
+          <strong>
+            Outbound messages can target any destination. Policy remains
+            unchanged until approval.
+          </strong>
         </div>
       </div>
       <TrueForgeTrace snapshot={props.snapshot} ready={awaitingApproval} />
@@ -903,7 +1209,9 @@ interface ScenarioPathProps {
 
 function ScenarioPath(props: ScenarioPathProps): ReactNode {
   const finished = props.snapshot.baseline !== null;
-  const live = props.snapshot.status === "BASELINE_RUNNING";
+  const live =
+    props.snapshot.operationActive &&
+    props.snapshot.status === "BASELINE_RUNNING";
   const progress = baselineProgress(props.snapshot);
   const nodeState = (index: number): string => {
     if (props.mode === "preview") return "preview";
@@ -957,15 +1265,15 @@ function EvidenceDrawer(props: EvidenceDrawerProps): ReactNode {
       <div className="evidence-drawer-content">
         {groups.length === 0 ? (
           <div className="activity-empty">
-            <SignalMark active={isLiveStatus(props.snapshot.status)} />
+            <SignalMark active={isLiveSnapshot(props.snapshot)} />
             <div>
               <strong>
-                {isLiveStatus(props.snapshot.status)
+                {isLiveSnapshot(props.snapshot)
                   ? "Waiting for the first durable record"
                   : "No durable records are available"}
               </strong>
               <p>
-                {isLiveStatus(props.snapshot.status)
+                {isLiveSnapshot(props.snapshot)
                   ? "This drawer fills from BLACKBOX and TrueForge state as work completes."
                   : "BLACKBOX has no technical activity to show for this state."}
               </p>
@@ -1021,7 +1329,9 @@ function activityGroups(snapshot: MissionControlSnapshot): ActivityGroup[] {
 }
 
 interface ActivityItemProps {
+  compact?: boolean;
   item: MissionControlActivity;
+  showScope?: boolean;
 }
 
 function ActivityItem(props: ActivityItemProps): ReactNode {
@@ -1038,9 +1348,15 @@ function ActivityItem(props: ActivityItemProps): ReactNode {
       <div>
         <span className="activity-meta">
           <b>{sourceLabel(item.source)}</b>
+          {props.showScope === true ? (
+            <span className="activity-scope">{scopeLabel(item.scope)}</span>
+          ) : null}
           {item.occurredAt === null ? null : <time dateTime={item.occurredAt}>{formatTime(item.occurredAt)}</time>}
         </span>
         <strong className={item.kind === "tool" ? "mono" : undefined}>{friendlyActivityTitle(item.title)}</strong>
+        {props.compact === true ? null : (
+          <p className="activity-detail">{item.detail}</p>
+        )}
       </div>
     </li>
   );
@@ -1434,12 +1750,16 @@ function investigationTaskState(
   }
   const activeTitle =
     completedTitle === "Evidence Provenance Verifier"
-      ? "Evidence provenance review started"
+      ? ["Evidence provenance review started", "Evidence review response received"]
       : completedTitle === "Policy Patch Reviewer"
-        ? "Policy Patch review started"
-        : "Daytona sandbox analysis running";
+        ? ["Policy Patch review started", "Policy review response received"]
+        : [
+            "Daytona analysis workspace created",
+            "Running evidence analysis",
+            "Sandbox analysis response received",
+          ];
   return activity.some(
-    (item) => item.status === "ACTIVE" && item.title === activeTitle,
+    (item) => activeTitle.includes(item.title),
   )
     ? "active"
     : "waiting";
@@ -1460,7 +1780,8 @@ function investigationSceneCopy(
       (item.source === "TRUEFORGE" || item.source === "DAYTONA"),
   );
   const title = {
-    "Daytona sandbox analysis running": "Daytona is analyzing the evidence",
+    "Daytona analysis workspace created": "Preparing isolated evidence analysis",
+    "Running evidence analysis": "Daytona is analyzing the evidence",
     "Evidence provenance review started": "Evidence provenance review is running",
     "Policy Patch review started": "Policy Patch review is running",
     "TrueForge investigation started": "Starting the TrueForge investigation",
@@ -1548,7 +1869,91 @@ function approvalCompleted(activity: MissionControlActivity[]): boolean {
 }
 
 function isLiveStatus(status: MissionControlSnapshot["status"]): boolean {
-  return status === "BASELINE_RUNNING" || status === "INVESTIGATING" || status === "VERIFYING";
+  return (
+    status === "BASELINE_RUNNING" ||
+    status === "INVESTIGATING" ||
+    status === "DRAFTED" ||
+    status === "DRY_RUN_PASSED" ||
+    status === "APPLIED" ||
+    status === "VERIFYING"
+  );
+}
+
+function isLiveSnapshot(snapshot: MissionControlSnapshot): boolean {
+  return snapshot.operationActive && isLiveStatus(snapshot.status);
+}
+
+function activityDockState(
+  snapshot: MissionControlSnapshot,
+  connectionError: string | null,
+): string {
+  if (connectionError !== null) return "Disconnected";
+  if (isLiveSnapshot(snapshot)) return "Live";
+  if (isLiveStatus(snapshot.status)) return "No active executor";
+  if (snapshot.status === "AWAITING_APPROVAL") return "Paused for decision";
+  if (snapshot.status === "VERIFIED") return "Run complete";
+  if (snapshot.status === "VALIDATION_FAILED") return "Claim withheld";
+  return "Durable history";
+}
+
+function dockActivities(
+  snapshot: MissionControlSnapshot,
+): MissionControlActivity[] {
+  const scopes = snapshot.phase === "BASELINE"
+    ? new Set(["BASELINE"])
+    : snapshot.phase === "INVESTIGATION"
+      ? new Set(["INVESTIGATION"])
+      : snapshot.phase === "APPROVAL"
+        ? new Set(["INVESTIGATION", "DECISION"])
+        : snapshot.phase === "VERIFICATION"
+          ? new Set(["REPLAY", "CONTROL"])
+          : null;
+
+  return snapshot.activity
+    .map((item, index) => ({ index, item }))
+    .filter(({ item }) => scopes === null || scopes.has(item.scope))
+    .sort((left, right) => {
+      const leftTime = left.item.occurredAt === null
+        ? Number.NEGATIVE_INFINITY
+        : Date.parse(left.item.occurredAt);
+      const rightTime = right.item.occurredAt === null
+        ? Number.NEGATIVE_INFINITY
+        : Date.parse(right.item.occurredAt);
+      if (leftTime !== rightTime) return rightTime - leftTime;
+      return right.index - left.index;
+    })
+    .map(({ item }) => item);
+}
+
+function activityStatusIcon(
+  item: MissionControlActivity,
+  active: boolean,
+): ReactNode {
+  if (item.status === "COMPLETED") {
+    return <Check aria-hidden="true" size={12} />;
+  }
+  if (item.status === "FAILED") {
+    return <AlertTriangle aria-hidden="true" size={11} />;
+  }
+  return <SignalMark active={active} />;
+}
+
+function scopeLabel(
+  scope: MissionControlActivity["scope"] | MissionControlSnapshot["phase"],
+): string {
+  if (scope === "REPLAY") return "Attack Replay";
+  if (scope === "CONTROL") return "Control Run";
+  if (scope === "DECISION" || scope === "APPROVAL") return "Human decision";
+  if (scope === "INVESTIGATION") return "Investigation";
+  if (scope === "BASELINE") return "Baseline Run";
+  if (scope === "VERIFICATION") return "Verification";
+  return "Incident";
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3_600)}h`;
 }
 
 function compactDestination(value: string): string {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -188,7 +189,8 @@ describe("Mission Control browser workflow", () => {
 
     render(<App />);
 
-    const status = await screen.findByRole("status");
+    const dialog = await screen.findByRole("dialog");
+    const status = within(dialog).getByRole("status");
     expect(status.textContent).toContain("Decision submitted");
     expect(status.querySelector(".loading-icon")).not.toBeNull();
     expect(
@@ -303,6 +305,364 @@ describe("Mission Control browser workflow", () => {
     );
     expect(task?.getAttribute("data-state")).toBe("active");
     expect(task?.textContent).toContain("Live");
+  });
+
+  it("keeps the latest current-scope activity and its safe detail visible", async () => {
+    const snapshot = liveActivityDockSnapshot();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const current = within(dock).getByRole("group", {
+      name: "Current agent activity",
+    });
+    expect(current.textContent).toContain("Drafting the restrictive Policy Patch");
+    expect(current.textContent).toContain(
+      "Comparing the candidate boundary with the proven receipt chain.",
+    );
+    expect(current.textContent).not.toContain("Reading the earlier evidence bundle");
+    expect(within(dock).getByText("2 active")).not.toBeNull();
+    expect(
+      within(dock).getByRole("log", {
+        name: "Recent durable agent activity",
+      }),
+    ).not.toBeNull();
+    const recent = within(dock).getByRole("log", {
+      name: "Recent durable agent activity",
+    });
+    expect(recent.textContent).toContain("Evidence provenance review completed");
+    expect(recent.textContent).not.toContain(
+      "The evidence review completed successfully.",
+    );
+
+    const evidenceDrawer = screen
+      .getByText("Evidence & agent trace")
+      .closest("details");
+    expect(evidenceDrawer?.open).toBe(false);
+  });
+
+  it("minimizes live activity to a current-action capsule and reopens it", async () => {
+    const snapshot = liveActivityDockSnapshot();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const minimize = within(dock).getByRole("button", {
+      name: "Minimize agent activity",
+    });
+    expect(minimize.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(minimize);
+
+    expect(
+      screen.queryByRole("complementary", { name: "Live agent activity" }),
+    ).toBeNull();
+    const reopen = screen.getByRole("button", { name: "Open agent activity" });
+    expect(reopen.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(reopen);
+    expect(reopen.textContent).toContain("Drafting the restrictive Policy Patch");
+    expect(reopen.getAttribute("aria-describedby")).toBe(
+      "agent-activity-capsule-description",
+    );
+    expect(
+      document.getElementById("agent-activity-capsule-description")?.textContent,
+    ).toContain("Live");
+    const announcement = screen.getByRole("status");
+    expect(announcement.textContent).toContain(
+      "Drafting the restrictive Policy Patch",
+    );
+
+    fireEvent.click(reopen);
+    const reopenedDock = screen.getByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const reopenedMinimize = within(reopenedDock).getByRole("button", {
+      name: "Minimize agent activity",
+    });
+    expect(document.activeElement).toBe(reopenedMinimize);
+    expect(reopenedMinimize.hasAttribute("aria-controls")).toBe(true);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(
+      screen.getByRole("complementary", { name: "Live agent activity" }),
+    ).not.toBeNull();
+    fireEvent.keyDown(reopenedDock, { key: "Escape" });
+    expect(screen.queryByRole("complementary", {
+      name: "Live agent activity",
+    })).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Open agent activity" }),
+    );
+  });
+
+  it("credits TrueForge and explains the dock's safe activity boundary", async () => {
+    const snapshot = liveActivityDockSnapshot();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const trueForge = within(dock).getByRole("link", {
+      name: /Open in TrueForge/,
+    });
+    expect(trueForge.getAttribute("href")).toBe(
+      "http://127.0.0.1:8790/sessions/session-1",
+    );
+    const boundary = within(dock).getByText(/Sanitized durable actions only/i);
+    expect(boundary.textContent).toMatch(/prompts/i);
+    expect(boundary.textContent).toMatch(/reasoning/i);
+    expect(boundary.textContent).toMatch(/private data/i);
+  });
+
+  it("keeps agent activity collapsed while the approval dialog owns attention", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(awaitingApprovalSnapshot())),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("dialog")).not.toBeNull();
+    expect(
+      screen.queryByRole("complementary", { name: "Live agent activity" }),
+    ).toBeNull();
+    const activityToggle = screen.getByRole("button", {
+      name: "Open agent activity",
+    });
+    expect(activityToggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("marks the activity dock disconnected while retaining its last durable update", async () => {
+    const snapshot = liveActivityDockSnapshot();
+    let readCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        readCount += 1;
+        return readCount === 1
+          ? jsonResponse(snapshot)
+          : jsonResponse(snapshot, 503);
+      }),
+    );
+
+    render(<App />);
+
+    const initialDock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    expect(initialDock.textContent).toContain(
+      "Drafting the restrictive Policy Patch",
+    );
+
+    await waitFor(
+      () => {
+        const dock = screen.getByRole("complementary", {
+          name: "Live agent activity",
+        });
+        expect(dock.textContent).toContain("Disconnected");
+        expect(dock.textContent).toContain("Last durable update");
+        expect(dock.textContent).toContain(
+          "Drafting the restrictive Policy Patch",
+        );
+        expect(
+          screen.getByRole("heading", { name: "Live updates interrupted" }),
+        ).not.toBeNull();
+        expect(
+          screen.getByText("Disconnected", { selector: ".status-pill" }),
+        ).not.toBeNull();
+        expect(
+          screen.getByText("Offline", { selector: ".now-label span" }),
+        ).not.toBeNull();
+      },
+      { timeout: 2_500 },
+    );
+  });
+
+  it("labels replay and control activity separately in the compact history", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...activeVerificationSnapshot(),
+      activity: [
+        {
+          detail: "The attack replay is executing.",
+          evidence: null,
+          id: "replay-active",
+          kind: "phase",
+          occurredAt: "2026-08-29T21:00:04.000Z",
+          scope: "REPLAY",
+          source: "BLACKBOX",
+          status: "ACTIVE",
+          title: "Support Agent turn in progress",
+        },
+        {
+          detail: "The trusted workflow completed.",
+          evidence: null,
+          id: "control-complete",
+          kind: "phase",
+          occurredAt: "2026-08-29T21:00:05.000Z",
+          scope: "CONTROL",
+          source: "BLACKBOX",
+          status: "COMPLETED",
+          title: "Run evidence finalized",
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    const current = within(dock).getByRole("group", {
+      name: "Current agent activity",
+    });
+    expect(current.textContent).toContain("Attack Replay");
+    expect(current.textContent).toContain("In progress");
+    const recent = within(dock).getByRole("log", {
+      name: "Recent durable agent activity",
+    });
+    expect(recent.textContent).toContain("Control Run");
+    expect(recent.textContent).not.toContain("The trusted workflow completed.");
+  });
+
+  it("adapts dock mode to the desktop breakpoint until the user overrides it", async () => {
+    let desktopChange: ((event: { matches: boolean }) => void) | undefined;
+    const desktopQuery = {
+      addEventListener: vi.fn(
+        (_type: string, listener: (event: { matches: boolean }) => void) => {
+          desktopChange = listener;
+        },
+      ),
+      matches: false,
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) =>
+        query === "(min-width: 1440px)"
+          ? desktopQuery
+          : {
+              addEventListener: vi.fn(),
+              matches: false,
+              removeEventListener: vi.fn(),
+            },
+      ),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(liveActivityDockSnapshot())),
+    );
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("button", { name: "Open agent activity" }),
+    ).not.toBeNull();
+    act(() => {
+      desktopQuery.matches = true;
+      desktopChange?.({ matches: true });
+    });
+    const dock = screen.getByRole("complementary", {
+      name: "Live agent activity",
+    });
+    fireEvent.click(
+      within(dock).getByRole("button", { name: "Minimize agent activity" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Open agent activity" }),
+    ).not.toBeNull();
+
+    act(() => {
+      desktopQuery.matches = false;
+      desktopChange?.({ matches: false });
+      desktopQuery.matches = true;
+      desktopChange?.({ matches: true });
+    });
+    expect(
+      screen.queryByRole("complementary", { name: "Live agent activity" }),
+    ).toBeNull();
+  });
+
+  it("does not let an older poll overwrite a newer command refresh", async () => {
+    let releaseDecision = (): void => undefined;
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    let releaseOldPoll = (): void => undefined;
+    const oldPollGate = new Promise<void>((resolve) => {
+      releaseOldPoll = resolve;
+    });
+    const approval = awaitingApprovalSnapshot();
+    const verifying = activeVerificationSnapshot();
+    let readCount = 0;
+    const fetcher = vi.fn(async (input: string) => {
+      if (input.includes("/remediation-decisions")) {
+        await decisionGate;
+        return jsonResponse(approval, 202);
+      }
+      readCount += 1;
+      if (readCount === 1) return jsonResponse(approval);
+      if (readCount === 2) {
+        await oldPollGate;
+        return jsonResponse(approval);
+      }
+      return jsonResponse(verifying);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    render(<App />);
+    const approve = await screen.findByRole("button", {
+      name: /Approve exact Policy Patch/,
+    });
+    fireEvent.click(approve);
+    await waitFor(
+      () => {
+        expect(readCount).toBe(2);
+      },
+      { timeout: 2_000 },
+    );
+
+    releaseDecision();
+    expect(
+      await screen.findByRole("heading", {
+        name: "Same attack. Separate control.",
+      }),
+    ).not.toBeNull();
+
+    releaseOldPoll();
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByRole("heading", {
+        name: "Same attack. Separate control.",
+      }),
+    ).not.toBeNull();
+  });
+
+  it("does not present a durable in-progress state as live without an executor", async () => {
+    const snapshot = missionControlSnapshotSchema.parse({
+      ...liveActivityDockSnapshot(),
+      operationActive: false,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(snapshot)));
+
+    const view = render(<App />);
+
+    const dock = await screen.findByRole("complementary", {
+      name: "Live agent activity",
+    });
+    expect(dock.textContent).toContain("No active executor");
+    expect(dock.querySelector(".signal-mark.active")).toBeNull();
+    expect(view.container.querySelector(".now-strip")?.textContent).toContain(
+      "Durable work is paused",
+    );
   });
 
   it("advances Baseline progress only from durable activity", async () => {
@@ -564,6 +924,7 @@ function readySnapshot(): MissionControlSnapshot {
       trueForgeUrl: "http://127.0.0.1:8790",
     },
     incident: null,
+    operationActive: false,
     phase: "READY",
     status: "READY",
     verification: null,
@@ -629,6 +990,7 @@ function awaitingApprovalSnapshot(): MissionControlSnapshot {
         ],
       },
     },
+    operationActive: false,
     phase: "APPROVAL",
     status: "AWAITING_APPROVAL",
   });
@@ -673,6 +1035,7 @@ function verifiedSnapshot(): MissionControlSnapshot {
       },
     },
     incident: { id: "incident-1", status: "RESOLVED" },
+    operationActive: false,
     phase: "RESULT",
     status: "VERIFIED",
     verification: {
@@ -694,6 +1057,7 @@ function failedVerificationSnapshot(): MissionControlSnapshot {
       detail: "The replay did not complete its evidence gates.",
       title: "Remediation validation failed",
     },
+    operationActive: false,
     phase: "RESULT",
     status: "VALIDATION_FAILED",
     verification: {
@@ -704,6 +1068,20 @@ function failedVerificationSnapshot(): MissionControlSnapshot {
         runId: "replay-1",
         state: "INCONCLUSIVE",
       },
+    },
+  });
+}
+
+function activeVerificationSnapshot(): MissionControlSnapshot {
+  return missionControlSnapshotSchema.parse({
+    ...incidentSnapshot(),
+    operationActive: true,
+    phase: "VERIFICATION",
+    status: "VERIFYING",
+    verification: {
+      control: { result: null, runId: null, state: "WAITING" },
+      policyReadback: { hash: CANDIDATE_HASH, state: "MATCHED", version: 2 },
+      replay: { result: null, runId: "replay-active", state: "ACTIVE" },
     },
   });
 }
@@ -739,6 +1117,7 @@ function incidentSnapshot(): MissionControlSnapshot {
       trueForgeUrl: "http://127.0.0.1:8790",
     },
     incident: { id: "incident-1", status: "OPEN" },
+    operationActive: true,
     phase: "INVESTIGATION",
     status: "INVESTIGATING",
     verification: null,
@@ -756,6 +1135,7 @@ function baselineRunningSnapshot(
     decisionPending: false,
     failure: null,
     incident: { id: "incident-1", status: "OPEN" },
+    operationActive: true,
     integrations: {
       trueForgeSessionId: null,
       trueForgeUrl: "http://127.0.0.1:8790",
@@ -763,6 +1143,59 @@ function baselineRunningSnapshot(
     phase: "BASELINE",
     status: "BASELINE_RUNNING",
     verification: null,
+  });
+}
+
+function liveActivityDockSnapshot(): MissionControlSnapshot {
+  return missionControlSnapshotSchema.parse({
+    ...incidentSnapshot(),
+    activity: [
+      {
+        detail: "A newer record from another phase must not become current.",
+        evidence: null,
+        id: "baseline-later",
+        kind: "tool",
+        occurredAt: "2026-08-29T21:00:05.000Z",
+        scope: "BASELINE",
+        source: "TRUEFORGE",
+        status: "ACTIVE",
+        title: "Reading the earlier evidence bundle",
+      },
+      {
+        detail:
+          "Comparing the candidate boundary with the proven receipt chain.",
+        evidence: null,
+        id: "investigation-latest",
+        kind: "subagent",
+        occurredAt: "2026-08-29T21:00:04.000Z",
+        scope: "INVESTIGATION",
+        source: "TRUEFORGE",
+        status: "ACTIVE",
+        title: "Drafting the restrictive Policy Patch",
+      },
+      {
+        detail: "The evidence review completed successfully.",
+        evidence: null,
+        id: "investigation-completed",
+        kind: "subagent",
+        occurredAt: "2026-08-29T21:00:06.000Z",
+        scope: "INVESTIGATION",
+        source: "TRUEFORGE",
+        status: "COMPLETED",
+        title: "Evidence provenance review completed",
+      },
+      {
+        detail: "Checking the candidate against the current Capability Policy.",
+        evidence: null,
+        id: "investigation-older",
+        kind: "subagent",
+        occurredAt: "2026-08-29T21:00:01.000Z",
+        scope: "INVESTIGATION",
+        source: "TRUEFORGE",
+        status: "ACTIVE",
+        title: "Policy Patch review started",
+      },
+    ],
   });
 }
 

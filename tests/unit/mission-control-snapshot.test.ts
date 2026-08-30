@@ -56,6 +56,7 @@ describe("Mission Control activity projection", () => {
       undefined,
       true,
       false,
+      true,
     );
     const toolActivity = snapshot.activity.filter(
       (item) => item.kind === "tool",
@@ -65,14 +66,90 @@ describe("Mission Control activity projection", () => {
       expect.objectContaining({
         id: "tool-completed-live",
         scope: "BASELINE",
-        source: "TRUEFORGE",
+        source: "SCENARIO_MCP",
         status: "COMPLETED",
         title: "read_internal_document",
       }),
     ]);
+    expect(toolActivity[0]?.detail).toContain("Scenario MCP");
+    expect(toolActivity[0]?.detail).not.toContain("Support Agent");
     expect(JSON.stringify(snapshot)).not.toContain(PRIVATE_CANARY);
     expect(JSON.stringify(snapshot)).not.toContain("input");
     expect(JSON.stringify(snapshot)).not.toContain("output");
+  });
+
+  it("retains unmatched repeated TrueForge calls after one-to-one deduplication", () => {
+    const baselineRun: EvidenceRunRead = {
+      manifest: {
+        canarySecret: PRIVATE_CANARY,
+        createdAt: "2026-08-29T21:00:00.000Z",
+        fingerprints: {
+          agent: "agent-fingerprint",
+          model: "model-fingerprint",
+          policy: "policy-fingerprint",
+          scenario: "scenario-fingerprint",
+          tools: "tools-fingerprint",
+        },
+        incidentId: "incident-live",
+        kind: "baseline",
+        runId: RUN_ID,
+      },
+      timeline: [
+        {
+          id: "tool-completed-once",
+          input: "{}",
+          occurredAt: "2026-08-29T21:00:04.000Z",
+          output: "{}",
+          runId: RUN_ID,
+          source: "mcp",
+          succeeded: true,
+          toolName: "read_internal_document",
+          transactionId: "transaction-once",
+          type: "tool.completed",
+        },
+        {
+          arguments: "{}",
+          id: "tool-called-matched",
+          occurredAt: "2026-08-29T21:00:03.000Z",
+          runId: RUN_ID,
+          source: "trueforge",
+          toolCallId: "call-matched",
+          toolName: "read_internal_document",
+          type: "tool.called",
+        },
+        {
+          arguments: "{}",
+          id: "tool-called-unmatched",
+          occurredAt: "2026-08-29T21:00:05.000Z",
+          runId: RUN_ID,
+          source: "trueforge",
+          toolCallId: "call-unmatched",
+          toolName: "read_internal_document",
+          type: "tool.called",
+        },
+      ],
+    };
+
+    const snapshot = createMissionControlSnapshot(
+      baselineRun,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      false,
+      true,
+    );
+
+    expect(snapshot.activity.filter((item) => item.kind === "tool")).toEqual([
+      expect.objectContaining({
+        id: "tool-completed-once",
+        source: "SCENARIO_MCP",
+      }),
+      expect.objectContaining({
+        id: "tool-called-unmatched",
+        source: "TRUEFORGE",
+      }),
+    ]);
   });
 
   it("marks a failed Scenario tool completion without exposing its error output", () => {
@@ -114,6 +191,7 @@ describe("Mission Control activity projection", () => {
       undefined,
       true,
       false,
+      true,
     );
 
     expect(snapshot.activity).toEqual([

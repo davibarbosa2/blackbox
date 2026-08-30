@@ -89,7 +89,7 @@ async function executeInvestigation(
     string,
     "EvidenceProvenanceVerifier" | "PolicyPatchReviewer"
   >();
-  const policyCallEvents = new Set<string>();
+  const policyCallReferences = new Set<string>();
   const analysisCallIds = new Set<string>();
   for await (const event of stream) {
     liveEvents.push(event);
@@ -97,7 +97,7 @@ async function executeInvestigation(
       event,
       session.data.id,
       threadRoles,
-      policyCallEvents,
+      policyCallReferences,
       analysisCallIds,
     );
     if (milestone !== undefined && onMilestone !== undefined) {
@@ -223,7 +223,7 @@ function milestoneFromEvent(
     string,
     "EvidenceProvenanceVerifier" | "PolicyPatchReviewer"
   >,
-  policyCallEvents: Set<string>,
+  policyCallReferences: Set<string>,
   analysisCallIds: Set<string>,
 ): InvestigationMilestone | undefined {
   if (event.type === "model.message") {
@@ -234,7 +234,7 @@ function milestoneFromEvent(
         call.toolInfo.serverName === INVESTIGATOR_MCP_NAME,
     );
     if (policyCall !== undefined) {
-      policyCallEvents.add(event.id);
+      policyCallReferences.add(`${event.id}:${policyCall.id}`);
       return investigationMilestoneSchema.parse({
         kind: "POLICY_PATCH_DRAFTED",
         occurredAt: event.createdAt,
@@ -299,7 +299,9 @@ function milestoneFromEvent(
   } else if (
     event.type === "tool.approval_required" &&
     event.toolCalls.length === 1 &&
-    policyCallEvents.has(event.toolCalls[0]?.sourceEventId ?? "")
+    policyCallReferences.has(
+      `${event.toolCalls[0]?.sourceEventId ?? ""}:${event.toolCalls[0]?.id ?? ""}`,
+    )
   ) {
     kind = "POLICY_ACTION_OBSERVED";
   }

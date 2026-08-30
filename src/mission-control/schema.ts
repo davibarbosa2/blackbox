@@ -28,6 +28,7 @@ const activitySchema = z.strictObject({
   source: z.enum([
     "BLACKBOX",
     "TRUEFORGE",
+    "SCENARIO_MCP",
     "DAYTONA",
     "CAPABILITY_POLICY",
     "EXTERNAL_SINK",
@@ -183,6 +184,7 @@ export const missionControlSnapshotSchema = z.strictObject({
       status: z.enum(["OPEN", "RESOLVED"]),
     })
     .nullable(),
+  operationActive: z.boolean(),
   phase: z.enum([
     "READY",
     "BASELINE",

@@ -238,6 +238,7 @@ export class IncidentCoordinator {
       baselineRun !== undefined && baselineRun.bundle === undefined,
       incident !== undefined &&
         this.#activeDecision?.incidentId === incident.incidentId,
+      this.#active !== undefined || this.#activeDecision !== undefined,
       this.#trueForgeUrl,
     );
   }
