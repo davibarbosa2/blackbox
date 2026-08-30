@@ -160,6 +160,17 @@ const COMPLETE_RECORDS: readonly EvidenceRecord[] = [
 ];
 
 describe("Evidence Ledger", () => {
+  it("reconstructs the latest durable Run before finalization", () => {
+    const ledger = new SqliteEvidenceLedger(":memory:");
+    ledger.createRun(MANIFEST);
+    ledger.append(COMPLETE_RECORDS.slice(0, 2));
+
+    expect(ledger.readLatestRun("baseline")).toEqual({
+      manifest: MANIFEST,
+      timeline: COMPLETE_RECORDS.slice(0, 2),
+    });
+  });
+
   it("deduplicates correlated evidence and proves the exact run canary", () => {
     const ledger = new SqliteEvidenceLedger(":memory:");
     ledger.createRun(MANIFEST);

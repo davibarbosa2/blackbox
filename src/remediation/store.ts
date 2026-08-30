@@ -10,8 +10,10 @@ import {
   evidenceJustificationSchema,
   investigationAnalysisSchema,
   investigationDiagnosisSchema,
+  investigationMilestoneSchema,
   pendingPolicyDecisionSchema,
   subagentEvidenceSchema,
+  type InvestigationMilestone,
 } from "../trueforge/runtime.js";
 
 const baselineSchema = z.object({
@@ -35,18 +37,25 @@ const lifecycleEventSchema = z.object({
   ]),
 });
 const lifecycleSchema = z.array(lifecycleEventSchema);
+const investigationProgressSchema = z.strictObject({
+  milestones: z.array(investigationMilestoneSchema),
+  sessionId: z.string(),
+});
 const investigatingSchema = z.object({
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   state: z.literal("INVESTIGATING"),
 });
 
 const draftedSchema = z.object({
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   state: z.literal("DRAFTED"),
 });
 
 const dryRunPassedSchema = z.object({
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   state: z.literal("DRY_RUN_PASSED"),
 });
@@ -65,9 +74,11 @@ const controlVerificationSchema = z.object({
 });
 
 const validationFailedSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: z.lazy(() => remediationDecisionEvidenceSchema).optional(),
   dryRun: policyPatchDryRunSchema.optional(),
   error: z.string(),
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   pendingDecision: pendingPolicyDecisionSchema.optional(),
   policyReadback: policyReadSchema.optional(),
@@ -78,6 +89,9 @@ const validationFailedSchema = z.object({
     })
     .optional(),
   state: z.literal("VALIDATION_FAILED"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const awaitingApprovalSchema = z.object({
@@ -85,6 +99,7 @@ const awaitingApprovalSchema = z.object({
   diagnosis: investigationDiagnosisSchema,
   dryRun: policyPatchDryRunSchema,
   evidenceJustification: evidenceJustificationSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   pendingDecision: pendingPolicyDecisionSchema,
   state: z.literal("AWAITING_APPROVAL"),
@@ -107,33 +122,48 @@ export type RemediationDecisionRequest = z.infer<
 >;
 
 const deniedSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: remediationDecisionEvidenceSchema.extend({
     decision: z.literal("deny"),
   }),
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("DENIED"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const staleSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: remediationDecisionEvidenceSchema.extend({
     decision: z.literal("allow"),
   }),
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("STALE"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const appliedSchema = z.object({
+  analysis: investigationAnalysisSchema.optional(),
   decision: remediationDecisionEvidenceSchema.extend({
     decision: z.literal("allow"),
   }),
   dryRun: policyPatchDryRunSchema,
+  investigationProgress: investigationProgressSchema.optional(),
   lifecycle: lifecycleSchema,
   policyReadback: policyReadSchema,
   state: z.literal("APPLIED"),
+  subagents: z
+    .tuple([subagentEvidenceSchema, subagentEvidenceSchema])
+    .optional(),
 });
 
 const verifyingSchema = appliedSchema.extend({
@@ -264,6 +294,37 @@ export class SqliteRemediationStore {
     return this.read(incidentId) ?? incident;
   }
 
+  recordInvestigationMilestone(
+    incidentId: string,
+    sourceMilestone: InvestigationMilestone,
+  ): DurableIncidentRead {
+    const current = this.#readRequired(incidentId);
+    if (current.remediation.state !== "INVESTIGATING") {
+      return current;
+    }
+    const milestone = investigationMilestoneSchema.parse(sourceMilestone);
+    const progress = current.remediation.investigationProgress;
+    if (
+      progress?.sessionId === milestone.sessionId &&
+      progress.milestones.some(
+        (candidate) => candidate.sourceEventId === milestone.sourceEventId,
+      )
+    ) {
+      return current;
+    }
+    const milestones =
+      progress?.sessionId === milestone.sessionId
+        ? [...progress.milestones, milestone]
+        : [milestone];
+    return this.#update(current, {
+      ...current.remediation,
+      investigationProgress: {
+        milestones,
+        sessionId: milestone.sessionId,
+      },
+    });
+  }
+
   readMcpAuthorization(incidentId: string): string {
     const row = this.#database
       .prepare(
@@ -290,11 +351,14 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not awaiting approval`);
     }
     return this.#update(current, {
+      analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "DENIED"),
       policyReadback,
       state: "DENIED",
+      subagents: current.remediation.subagents,
     });
   }
 
@@ -309,11 +373,14 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not awaiting approval`);
     }
     return this.#update(current, {
+      analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "STALE"),
       policyReadback,
       state: "STALE",
+      subagents: current.remediation.subagents,
     });
   }
 
@@ -334,11 +401,14 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not awaiting approval`);
     }
     return this.#update(current, {
+      analysis: current.remediation.analysis,
       decision,
       dryRun: current.remediation.dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "APPLIED"),
       policyReadback,
       state: "APPLIED",
+      subagents: current.remediation.subagents,
     });
   }
 
@@ -415,6 +485,7 @@ export class SqliteRemediationStore {
       throw new Error(`Incident ${incidentId} is not being investigated`);
     }
     return this.#update(current, {
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "DRAFTED"),
       state: "DRAFTED",
     });
@@ -430,6 +501,7 @@ export class SqliteRemediationStore {
     }
     return this.#update(current, {
       dryRun,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "DRY_RUN_PASSED"),
       state: "DRY_RUN_PASSED",
     });
@@ -445,6 +517,7 @@ export class SqliteRemediationStore {
     }
     return this.#update(current, {
       ...remediation,
+      investigationProgress: current.remediation.investigationProgress,
       lifecycle: appendLifecycle(current, "AWAITING_APPROVAL"),
       state: "AWAITING_APPROVAL",
     });
@@ -468,6 +541,10 @@ export class SqliteRemediationStore {
       lifecycle: appendLifecycle(current, "VALIDATION_FAILED"),
       state: "VALIDATION_FAILED",
     };
+    if (current.remediation.investigationProgress !== undefined) {
+      failure.investigationProgress =
+        current.remediation.investigationProgress;
+    }
     if (dryRun !== undefined) failure.dryRun = dryRun;
     if (pendingDecision !== undefined) {
       failure.pendingDecision = pendingDecision;
@@ -482,6 +559,18 @@ export class SqliteRemediationStore {
     if (current.remediation.state === "VERIFYING") {
       failure.verification = current.remediation.verification;
     }
+    if (
+      "analysis" in current.remediation &&
+      current.remediation.analysis !== undefined
+    ) {
+      failure.analysis = current.remediation.analysis;
+    }
+    if (
+      "subagents" in current.remediation &&
+      current.remediation.subagents !== undefined
+    ) {
+      failure.subagents = current.remediation.subagents;
+    }
     return this.#update(current, failure);
   }
 
@@ -489,6 +578,17 @@ export class SqliteRemediationStore {
     const row = this.#database
       .prepare("SELECT record_json FROM incidents WHERE incident_id = ?")
       .get(incidentId);
+    if (row === undefined) return undefined;
+    const parsed = rowSchema.parse(row);
+    return durableIncidentReadSchema.parse(JSON.parse(parsed.record_json));
+  }
+
+  readLatest(): DurableIncidentRead | undefined {
+    const row = this.#database
+      .prepare(
+        "SELECT record_json FROM incidents ORDER BY rowid DESC LIMIT 1",
+      )
+      .get();
     if (row === undefined) return undefined;
     const parsed = rowSchema.parse(row);
     return durableIncidentReadSchema.parse(JSON.parse(parsed.record_json));

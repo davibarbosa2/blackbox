@@ -12,6 +12,8 @@ import type {
 } from "../evidence/ledger.js";
 import { baselineEvidenceBundleSchema } from "../evidence/ledger.js";
 import { classifyTrueForgeFailure } from "../failure.js";
+import type { MissionControlSnapshot } from "../mission-control/schema.js";
+import { createMissionControlSnapshot } from "../mission-control/snapshot.js";
 import type {
   CapabilityPolicy,
   PolicyApplicationResult,
@@ -42,6 +44,7 @@ import {
 } from "../trueforge/runtime.js";
 import type {
   BaselineExecutionEvidence,
+  BaselineToolCall,
   TrueForgeRuntime,
 } from "../trueforge/runtime.js";
 
@@ -68,6 +71,7 @@ export interface IncidentCoordinatorOptions {
   remediations: SqliteRemediationStore;
   runtime: TrueForgeRuntime;
   trustedDestination: string;
+  trueForgeUrl?: string;
 }
 
 export class IncidentCoordinator {
@@ -79,6 +83,7 @@ export class IncidentCoordinator {
   readonly #runtime: TrueForgeRuntime;
   readonly #remediations: SqliteRemediationStore;
   readonly #trustedDestination: string;
+  readonly #trueForgeUrl: string | undefined;
   readonly #observeBaselineRun:
     | ((context: BaselineRunObservationContext) => BaselineRunObservation)
     | undefined;
@@ -105,6 +110,12 @@ export class IncidentCoordinator {
         proposal: InvestigationProposal;
       }
     | undefined;
+  #current:
+    | {
+        incidentId: string;
+        runId: string;
+      }
+    | undefined;
 
   constructor(options: IncidentCoordinatorOptions) {
     this.#runtime = options.runtime;
@@ -115,7 +126,77 @@ export class IncidentCoordinator {
     this.#baseUrl = options.baseUrl;
     this.#remediations = options.remediations;
     this.#trustedDestination = options.trustedDestination;
+    this.#trueForgeUrl = options.trueForgeUrl;
     this.#observeBaselineRun = options.observeBaselineRun;
+  }
+
+  recover(): void {
+    if (this.#active !== undefined || this.#activeDecision !== undefined) {
+      return;
+    }
+    const baseline = this.#ledger.readLatestRun("baseline");
+    if (baseline !== undefined && baseline.bundle === undefined) {
+      let latestObservedAt =
+        baseline.timeline.at(-1)?.occurredAt ?? baseline.manifest.createdAt;
+      if (
+        !baseline.timeline.some(
+          (record) =>
+            record.type === "turn.completed" || record.type === "run.failed",
+        )
+      ) {
+        latestObservedAt = nextInstant(latestObservedAt);
+        this.#ledger.append([
+          {
+            id: `${baseline.manifest.runId}:recovery-failed`,
+            message:
+              "BLACKBOX restarted before the Baseline Run completed; the Victim Agent turn was not replayed",
+            occurredAt: latestObservedAt,
+            runId: baseline.manifest.runId,
+            source: "blackbox",
+            stage: "blackbox-recovery",
+            type: "run.failed",
+          },
+        ]);
+      }
+      if (
+        !baseline.timeline.some(
+          (record) =>
+            record.type === "run.state_changed" &&
+            record.state === "VERIFYING",
+        )
+      ) {
+        latestObservedAt = nextInstant(latestObservedAt);
+        this.#ledger.append([
+          stateRecord(
+            baseline.manifest.runId,
+            "VERIFYING",
+            latestObservedAt,
+          ),
+        ]);
+      }
+      this.#ledger.finalizeBaseline(baseline.manifest.runId);
+    }
+    const incident = this.#remediations.readLatest();
+    if (incident !== undefined) {
+      switch (incident.remediation.state) {
+        case "INVESTIGATING":
+        case "DRAFTED":
+        case "DRY_RUN_PASSED":
+          this.#remediations.validationFailed(
+            incident.incidentId,
+            "BLACKBOX restarted before the TrueForge investigation completed; no agent actions were replayed",
+          );
+          return;
+        case "APPLIED":
+        case "VERIFYING":
+          this.#remediations.validationFailed(
+            incident.incidentId,
+            "BLACKBOX restarted before Remediation verification completed; the applied Capability Policy remains effective and no verification actions were replayed",
+          );
+          return;
+      }
+    }
+    this.#resumeUnmatchedBaseline();
   }
 
   start(): StartIncidentResult {
@@ -129,6 +210,17 @@ export class IncidentCoordinator {
           incident?.baseline.runId ?? this.#activeDecision.incidentId,
         started: false,
       };
+    }
+    const durableBaseline = this.#ledger.readLatestRun("baseline");
+    if (durableBaseline !== undefined && durableBaseline.bundle === undefined) {
+      return { activeRunId: durableBaseline.manifest.runId, started: false };
+    }
+    const durableIncident = this.#remediations.readLatest();
+    if (
+      durableIncident !== undefined &&
+      isDurableWorkInProgress(durableIncident)
+    ) {
+      return { activeRunId: durableIncident.baseline.runId, started: false };
     }
 
     const incidentId = randomUUID();
@@ -145,6 +237,7 @@ export class IncidentCoordinator {
       this.#policy,
       this.#baseUrl,
     );
+    this.#current = { incidentId, runId };
     this.#ledger.createRun(manifest);
     this.#ledger.append([
       stateRecord(runId, "PREPARING", createdAt),
@@ -174,12 +267,46 @@ export class IncidentCoordinator {
   read(runId: string): RunRead | undefined {
     const bundle = this.#ledger.readBundle(runId);
     if (bundle !== undefined) return { bundle, status: "completed" };
-    if (this.#active?.runId === runId) return { status: "running" };
+    if (this.#ledger.readRun(runId) !== undefined) return { status: "running" };
     return undefined;
   }
 
   readIncident(incidentId: string): DurableIncidentRead | undefined {
     return this.#remediations.read(incidentId);
+  }
+
+  readMissionControl(): MissionControlSnapshot {
+    const current = this.#current;
+    const baselineRun =
+      current === undefined
+        ? this.#ledger.readLatestRun("baseline")
+        : this.#ledger.readRun(current.runId);
+    const runId = baselineRun?.manifest.runId ?? current?.runId;
+    const candidateIncident =
+      current === undefined
+        ? this.#remediations.readLatest()
+        : this.#remediations.read(current.incidentId);
+    const incident =
+      candidateIncident?.baseline.runId === runId
+        ? candidateIncident
+        : undefined;
+    const replayRun = readVerificationRun(this.#ledger, incident, "replay");
+    const controlRun = readVerificationRun(
+      this.#ledger,
+      incident,
+      "control",
+    );
+    return createMissionControlSnapshot(
+      baselineRun,
+      replayRun,
+      controlRun,
+      incident,
+      baselineRun !== undefined && baselineRun.bundle === undefined,
+      incident !== undefined &&
+        this.#activeDecision?.incidentId === incident.incidentId,
+      this.#active !== undefined || this.#activeDecision !== undefined,
+      this.#trueForgeUrl,
+    );
   }
 
   decide(
@@ -599,6 +726,9 @@ export class IncidentCoordinator {
     try {
       const evidence = await execute({
         mcpAuthorization,
+        onToolCall: (call) => {
+          this.#ledger.append([toolCalledRecord(manifest.runId, call)]);
+        },
         runId: manifest.runId,
         signal,
       });
@@ -647,6 +777,9 @@ export class IncidentCoordinator {
       try {
         evidence = await this.#runtime.executeBaseline({
           mcpAuthorization,
+          onToolCall: (call) => {
+            this.#ledger.append([toolCalledRecord(runId, call)]);
+          },
           runId,
           signal,
         });
@@ -697,6 +830,34 @@ export class IncidentCoordinator {
     }
   }
 
+  #resumeUnmatchedBaseline(): void {
+    const run = this.#ledger.readLatestRun("baseline");
+    if (run?.bundle?.manifest.kind !== "baseline") {
+      return;
+    }
+
+    const bundle = baselineEvidenceBundleSchema.parse(run.bundle);
+    if (
+      bundle.verdict !== "VULNERABLE" ||
+      this.#remediations.read(bundle.manifest.incidentId) !== undefined
+    ) {
+      return;
+    }
+    const runId = bundle.manifest.runId;
+    const mcpAuthorization = randomBytes(32).toString("base64url");
+    const controller = new AbortController();
+    this.#current = { incidentId: bundle.manifest.incidentId, runId };
+    const completion = this.#investigate(
+      bundle,
+      mcpAuthorization,
+      controller.signal,
+    ).finally(() => {
+      if (this.#active?.runId === runId) this.#active = undefined;
+    });
+    this.#active = { completion, controller, mcpAuthorization, runId };
+    void completion.catch(() => undefined);
+  }
+
   async #investigate(
     bundle: BaselineEvidenceBundle,
     mcpAuthorization: string,
@@ -729,6 +890,12 @@ export class IncidentCoordinator {
           await executeInvestigation({
             bundle,
             mcpAuthorization,
+            onMilestone: (milestone) => {
+              this.#remediations.recordInvestigationMilestone(
+                incidentId,
+                milestone,
+              );
+            },
             policy,
             signal,
             trustedDestination: this.#trustedDestination,
@@ -799,6 +966,54 @@ export class IncidentCoordinator {
       return undefined;
     }
   }
+}
+
+function isDurableWorkInProgress(incident: DurableIncidentRead): boolean {
+  return (
+    incident.remediation.state === "INVESTIGATING" ||
+    incident.remediation.state === "DRAFTED" ||
+    incident.remediation.state === "DRY_RUN_PASSED" ||
+    incident.remediation.state === "AWAITING_APPROVAL" ||
+    incident.remediation.state === "APPLIED" ||
+    incident.remediation.state === "VERIFYING"
+  );
+}
+
+function verificationRunId(
+  incident: DurableIncidentRead | undefined,
+  kind: "replay" | "control",
+): string | undefined {
+  const remediation = incident?.remediation;
+  if (
+    remediation?.state !== "VERIFYING" &&
+    remediation?.state !== "VERIFIED" &&
+    remediation?.state !== "VALIDATION_FAILED"
+  ) {
+    return undefined;
+  }
+  return remediation.verification?.[kind]?.runId;
+}
+
+function readVerificationRun(
+  ledger: EvidenceLedger,
+  incident: DurableIncidentRead | undefined,
+  kind: "replay" | "control",
+) {
+  const referencedRunId = verificationRunId(incident, kind);
+  if (referencedRunId !== undefined) {
+    return ledger.readRun(referencedRunId);
+  }
+  if (incident?.remediation.state !== "VERIFYING") return undefined;
+
+  const latestRun = ledger.readLatestRun(kind);
+  if (
+    latestRun?.manifest.kind !== kind ||
+    latestRun.manifest.incidentId !== incident.incidentId ||
+    latestRun.manifest.baselineRunId !== incident.baseline.runId
+  ) {
+    return undefined;
+  }
+  return latestRun;
 }
 
 function validateInvestigationEvidence(
@@ -955,18 +1170,7 @@ function baselineEvidenceRecords(
       source: "trueforge",
       type: "mcp.initialized",
     },
-    ...evidence.toolCalls.map(
-      (call): EvidenceRecord => ({
-        arguments: call.arguments,
-        id: call.eventId,
-        occurredAt: call.occurredAt,
-        runId,
-        source: "trueforge",
-        toolCallId: call.toolCallId,
-        toolName: call.toolName,
-        type: "tool.called",
-      }),
-    ),
+    ...evidence.toolCalls.map((call) => toolCalledRecord(runId, call)),
     ...evidence.toolResponses.map(
       (response): EvidenceRecord => ({
         content: response.content,
@@ -989,6 +1193,22 @@ function baselineEvidenceRecords(
       type: "turn.completed",
     },
   ];
+}
+
+function toolCalledRecord(
+  runId: string,
+  call: BaselineToolCall,
+): Extract<EvidenceRecord, { type: "tool.called" }> {
+  return {
+    arguments: call.arguments,
+    id: call.eventId,
+    occurredAt: call.occurredAt,
+    runId,
+    source: "trueforge",
+    toolCallId: call.toolCallId,
+    toolName: call.toolName,
+    type: "tool.called",
+  };
 }
 
 function safelyObserve(operation: () => void): void {

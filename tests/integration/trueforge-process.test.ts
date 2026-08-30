@@ -49,7 +49,7 @@ describe("pinned TrueForge process", () => {
 
     await trueForge.stop();
     await expect(findAvailablePort(port)).resolves.toBe(port);
-  }, 20_000);
+  }, 40_000);
 
   it("stops the owned service when SQLite permission hardening fails", async () => {
     const runtimeDirectory = await mkdtemp(

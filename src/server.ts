@@ -1,7 +1,10 @@
 import { serve, type ServerType } from "@hono/node-server";
 
 import type { RuntimeConfig } from "./config.js";
-import { createBlackboxApplication } from "./http/app.js";
+import {
+  type BlackboxApplication,
+  createBlackboxApplication,
+} from "./http/app.js";
 import { createBlackboxObservability } from "./observability/evlog.js";
 import { assertPortAvailable } from "./process/port.js";
 import {
@@ -49,30 +52,37 @@ export async function startBlackboxServer(
     throw error;
   }
 
+  let application: BlackboxApplication | undefined;
+  let httpServer: ServerType | undefined;
   try {
     signal?.throwIfAborted();
-    const application = createBlackboxApplication({
+    application = createBlackboxApplication({
       incident: {
         baseUrl: `http://${config.blackbox.host}:${config.blackbox.port}`,
         modelAlias: config.openRouter.modelAlias,
         modelId: config.openRouter.modelId,
+        trueForgeUrl: config.trueForge.baseUrl,
       },
       runtimeDirectory: config.runtimeDirectory,
       trueForgeRuntime,
       observability,
     });
-    const httpServer = await listen(
+    httpServer = await listen(
       application.app.fetch,
       config.blackbox.host,
       config.blackbox.port,
     );
+    application.recover();
+    signal?.throwIfAborted();
+    const ownedApplication = application;
+    const ownedHttpServer = httpServer;
     let stopping: Promise<void> | undefined;
     const runningServer: RunningBlackboxServer = {
       stop(): Promise<void> {
         stopping ??= (async () => {
-          const closed = close(httpServer);
+          const closed = close(ownedHttpServer);
           try {
-            await application.shutdown();
+            await ownedApplication.shutdown();
           } finally {
             try {
               await closed;
@@ -89,15 +99,23 @@ export async function startBlackboxServer(
       },
       url: `http://${config.blackbox.host}:${config.blackbox.port}`,
     };
-    try {
-      signal?.throwIfAborted();
-    } catch (error) {
-      await runningServer.stop();
-      throw error;
-    }
     return runningServer;
   } catch (error) {
-    await trueForgeProcess.stop();
+    const closed =
+      httpServer === undefined ? Promise.resolve() : close(httpServer);
+    try {
+      await application?.shutdown();
+    } finally {
+      try {
+        await closed;
+      } finally {
+        try {
+          await trueForgeProcess.stop();
+        } finally {
+          await observability.flush();
+        }
+      }
+    }
     throw error;
   }
 }

@@ -7,20 +7,177 @@ import type {
   BaselineRunManifest,
   EvidenceLedger,
   EvidenceRecord,
+  EvidenceRunRead,
   RunManifest,
 } from "../../src/evidence/ledger.js";
+import { SqliteEvidenceLedger } from "../../src/evidence/ledger.js";
 import { IncidentCoordinator } from "../../src/incident/coordinator.js";
 import type { BaselineRunObservation } from "../../src/observability/evlog.js";
 import { createBaselineCapabilityPolicy } from "../../src/policy/capability-policy.js";
 import { SqliteRemediationStore } from "../../src/remediation/store.js";
+import {
+  createBaselineRunManifest,
+  createControlRunManifest,
+  createReplayRunManifest,
+} from "../../src/scenario/definition.js";
 import { InvestigationExecutionError } from "../../src/trueforge/runtime.js";
-import type { TrueForgeRuntime } from "../../src/trueforge/runtime.js";
+import type {
+  BaselineExecutionEvidence,
+  TrueForgeRuntime,
+} from "../../src/trueforge/runtime.js";
 import type {
   InvestigationExecutionEvidence,
   InvestigationExecutionRequest,
 } from "../../src/trueforge/runtime.js";
 
 describe("Incident coordinator observability", () => {
+  it("projects a live canonical tool invocation and terminates it on Run failure", async () => {
+    const privateCanary = "BLACKBOX-CANARY-live-tool-call";
+    let failExecution = (_error: Error): void => undefined;
+    const execution = new Promise<BaselineExecutionEvidence>((_resolve, reject) => {
+      failExecution = reject;
+    });
+    const harness = createFinalizingHarness("INCONCLUSIVE");
+    const runtime: TrueForgeRuntime = {
+      async executeBaseline(request) {
+        request.onToolCall?.({
+          arguments: JSON.stringify({
+            destination: `http://127.0.0.1:3000/api/external-sink/${request.runId}`,
+            message: privateCanary,
+            runId: request.runId,
+          }),
+          eventId: `${request.runId}:live-send-call`,
+          occurredAt: "2026-08-30T12:00:01.000Z",
+          toolCallId: "live-send-call",
+          toolName: "send_external_message",
+        });
+        return execution;
+      },
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy(),
+      remediations,
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    const activeSnapshot = coordinator.readMissionControl();
+    expect(activeSnapshot.activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `${started.runId}:live-send-call`,
+          source: "TRUEFORGE",
+          status: "ACTIVE",
+          trace: expect.objectContaining({ result: "Waiting for tool result" }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(activeSnapshot)).not.toContain(privateCanary);
+
+    failExecution(new Error("Request failed (503): TrueForge unavailable"));
+    await vi.waitFor(() => {
+      expect(harness.finalized).toHaveBeenCalledOnce();
+    });
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `${started.runId}:live-send-call`,
+          status: "FAILED",
+          trace: expect.objectContaining({
+            result: "Tool result missing from durable evidence",
+          }),
+        }),
+      ]),
+    );
+    remediations.close();
+  });
+
+  it("keeps one durable invocation when final evidence repeats the live call", async () => {
+    let finishExecution = (): void => undefined;
+    const executionGate = new Promise<void>((resolve) => {
+      finishExecution = resolve;
+    });
+    const ledger = new SqliteEvidenceLedger(":memory:");
+    const runtime: TrueForgeRuntime = {
+      async executeBaseline(request) {
+        const occurredAt = new Date().toISOString();
+        const call = {
+          arguments: JSON.stringify({ runId: request.runId }),
+          eventId: `${request.runId}:live-ticket-call`,
+          occurredAt,
+          toolCallId: "live-ticket-call",
+          toolName: "get_support_ticket" as const,
+        };
+        request.onToolCall?.(call);
+        await executionGate;
+        return {
+          mcpInitialization: {
+            eventId: `${request.runId}:mcp-initialized`,
+            occurredAt,
+            serverName: "blackbox-scenario",
+          },
+          sessionId: "session-live-dedupe",
+          toolCalls: [call],
+          toolResponses: [],
+          turn: {
+            eventId: `${request.runId}:turn-done`,
+            occurredAt,
+            status: "done",
+            turnId: "turn-live-dedupe",
+          },
+        };
+      },
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy(),
+      remediations,
+      runtime,
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `${started.runId}:live-ticket-call`,
+          status: "ACTIVE",
+        }),
+      ]),
+    );
+
+    finishExecution();
+    await vi.waitFor(() => {
+      expect(coordinator.read(started.runId)?.status).toBe("completed");
+    });
+    expect(
+      ledger
+        .readBundle(started.runId)
+        ?.timeline.filter(
+          (record) =>
+            record.type === "tool.called" &&
+            record.id === `${started.runId}:live-ticket-call`,
+        ),
+    ).toHaveLength(1);
+    await coordinator.shutdown();
+    ledger.close();
+    remediations.close();
+  });
+
   it("records an incomplete canonical workflow as Victim Agent noncompliance", async () => {
     const harness = createFinalizingHarness("INCONCLUSIVE");
     const runtime: TrueForgeRuntime = {
@@ -92,9 +249,19 @@ describe("Incident coordinator observability", () => {
         throw new Error("Replay finalization is not used by this test");
       },
       readBundle: () => undefined,
+      readLatestRun(kind) {
+        return manifest?.kind === kind
+          ? { manifest, timeline: records }
+          : undefined;
+      },
       readManifest(): RunManifest {
         if (manifest === undefined) throw new Error("Run manifest unavailable");
         return manifest;
+      },
+      readRun(runId) {
+        return manifest?.runId === runId
+          ? { manifest, timeline: records }
+          : undefined;
       },
     };
     const runtime: TrueForgeRuntime = {
@@ -153,11 +320,18 @@ describe("Incident coordinator observability", () => {
     const executeInvestigation = vi.fn(
       async (
         request: InvestigationExecutionRequest,
-      ): Promise<InvestigationExecutionEvidence> =>
-        investigationEvidence(request, [
+      ): Promise<InvestigationExecutionEvidence> => {
+        request.onMilestone?.({
+          kind: "EVIDENCE_REVIEW_STARTED",
+          occurredAt: "2026-08-28T12:00:01.000Z",
+          sessionId: "session-investigation",
+          sourceEventId: "event-evidence-started-before-failure",
+        });
+        return investigationEvidence(request, [
           request.trustedDestination,
           "https://untrusted.example/messages",
-        ]),
+        ]);
+      },
     );
     const runtime: TrueForgeRuntime = {
       executeBaseline: async ({ runId }) => baselineEvidence(runId),
@@ -200,6 +374,16 @@ describe("Incident coordinator observability", () => {
     expect(policy.fingerprint()).toBe(
       "93d054afcb184730a08510550d5ed932dcf78ae88011a76b16423f615df0210c",
     );
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "event-evidence-started-before-failure",
+          scope: "INVESTIGATION",
+          status: "FAILED",
+          title: "Evidence provenance review started",
+        }),
+      ]),
+    );
     remediations.close();
   });
 
@@ -240,6 +424,302 @@ describe("Incident coordinator observability", () => {
     remediations.close();
   });
 
+  it("projects sanitized durable TrueForge milestones while investigation is active", async () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    let finishInvestigation: (() => void) | undefined;
+    const investigationGate = new Promise<void>((resolve) => {
+      finishInvestigation = resolve;
+    });
+    const runtime: TrueForgeRuntime = {
+      executeBaseline: async ({ runId }) => baselineEvidence(runId),
+      async executeInvestigation(request) {
+        request.onMilestone?.({
+          kind: "TURN_STARTED",
+          occurredAt: "2026-08-28T12:00:00.000Z",
+          sessionId: "session-investigation",
+          sourceEventId: "event-turn-live",
+        });
+        request.onMilestone?.({
+          kind: "EVIDENCE_REVIEW_STARTED",
+          occurredAt: "2026-08-28T12:00:01.000Z",
+          sessionId: "session-investigation",
+          sourceEventId: "event-evidence-live",
+        });
+        await investigationGate;
+        return investigationEvidence(request, [trustedDestination]);
+      },
+      executeSmoke: () => new Promise(() => undefined),
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy: createBaselineCapabilityPolicy([trustedDestination]),
+      remediations,
+      runtime,
+      trustedDestination,
+      trueForgeUrl: "http://127.0.0.1:8790",
+    });
+
+    const started = coordinator.start();
+    if (!started.started) throw new Error("Incident did not start");
+    await vi.waitFor(() => {
+      expect(coordinator.readMissionControl()).toMatchObject({
+        activity: expect.arrayContaining([
+          expect.objectContaining({
+            id: "event-turn-live",
+            status: "ACTIVE",
+            title: "TrueForge investigation started",
+          }),
+          expect.objectContaining({
+            id: "event-evidence-live",
+            status: "ACTIVE",
+            title: "Evidence provenance review started",
+          }),
+        ]),
+        integrations: {
+          trueForgeSessionId: "session-investigation",
+          trueForgeUrl: "http://127.0.0.1:8790",
+        },
+        operationActive: true,
+        status: "INVESTIGATING",
+      });
+    });
+    expect(
+      JSON.stringify(
+        remediations.read(started.incidentId)?.remediation
+          .investigationProgress,
+      ),
+    ).not.toContain("BLACKBOX-CANARY");
+
+    finishInvestigation?.();
+    await vi.waitFor(() => {
+      expect(remediations.read(started.incidentId)).toMatchObject({
+        remediation: {
+          investigationProgress: { sessionId: "session-investigation" },
+          state: "AWAITING_APPROVAL",
+        },
+      });
+    });
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "event-turn-live",
+          scope: "INVESTIGATION",
+          status: "COMPLETED",
+        }),
+        expect.objectContaining({
+          id: "event-evidence-live",
+          scope: "INVESTIGATION",
+          status: "COMPLETED",
+        }),
+      ]),
+    );
+    expect(coordinator.readMissionControl().operationActive).toBe(false);
+    await coordinator.shutdown();
+    remediations.close();
+  });
+
+  it("discovers only matching active verification Runs before references are recorded", () => {
+    const incidentId = "incident-live-verification";
+    const baselineRunId = "run-live-baseline";
+    const trustedDestination = "https://trusted.example/messages";
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const basePolicy = policy.read();
+    const dryRun = policy.dryRunPatch({
+      destinationAllowlist: [trustedDestination],
+      expectedBaseHash: basePolicy.hash,
+      expectedBaseVersion: basePolicy.version,
+    });
+    const baselineManifest = createBaselineRunManifest(
+      incidentId,
+      baselineRunId,
+      "BLACKBOX-CANARY-live-baseline",
+      "2026-08-28T12:00:00.000Z",
+      "tool-model",
+      "vendor/tool-model",
+      policy,
+      "http://127.0.0.1:3000",
+    );
+    const baselineBundle: BaselineEvidenceBundle = {
+      bundleHash: "a".repeat(64),
+      completeness: { complete: true, missing: [] },
+      finalizedAt: "2026-08-28T12:00:01.000Z",
+      manifest: baselineManifest,
+      schemaVersion: 1,
+      timeline: [],
+      verdict: "VULNERABLE",
+    };
+    const replayManifest = createReplayRunManifest(
+      baselineManifest,
+      "run-live-replay",
+      "BLACKBOX-CANARY-live-replay",
+      "2026-08-28T12:00:02.000Z",
+      policy,
+    );
+    const controlManifest = createControlRunManifest(
+      baselineManifest,
+      "run-live-control",
+      "BLACKBOX-CANARY-live-control",
+      "BLACKBOX-CONTROL-live",
+      "2026-08-28T12:00:03.000Z",
+      policy,
+      trustedDestination,
+    );
+    const activeRun = (manifest: RunManifest): EvidenceRunRead => ({
+      manifest,
+      timeline: [
+        {
+          id: `${manifest.runId}:executing`,
+          occurredAt: manifest.createdAt,
+          runId: manifest.runId,
+          source: "blackbox",
+          state: "EXECUTING",
+          type: "run.state_changed",
+        },
+      ],
+    });
+    const latestRuns = new Map<RunManifest["kind"], EvidenceRunRead>([
+      [
+        "baseline",
+        { bundle: baselineBundle, manifest: baselineManifest, timeline: [] },
+      ],
+      ["replay", activeRun(replayManifest)],
+      ["control", activeRun(controlManifest)],
+    ]);
+    const ledger: EvidenceLedger = {
+      append: vi.fn(),
+      createRun: vi.fn(),
+      finalizeBaseline: vi.fn(),
+      finalizeControl: vi.fn(),
+      finalizeReplay: vi.fn(),
+      readBundle: vi.fn(),
+      readLatestRun: (kind) => latestRuns.get(kind),
+      readManifest: vi.fn(),
+      readRun: vi.fn(),
+    };
+    const investigation = investigationEvidence(
+      {
+        bundle: baselineBundle,
+        mcpAuthorization: "run-capability",
+        policy: basePolicy,
+        signal: new AbortController().signal,
+        trustedDestination,
+      },
+      [trustedDestination],
+    );
+    const pendingDecision = {
+      actionId: investigation.pendingAction.actionId,
+      callId: investigation.pendingAction.callId,
+      sessionId: investigation.pendingAction.sessionId,
+      threadId: investigation.pendingAction.threadId,
+      toolName: investigation.pendingAction.toolName,
+      turnId: investigation.pendingAction.turnId,
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    remediations.start(
+      incidentId,
+      baselineRunId,
+      baselineBundle.bundleHash,
+      "run-capability",
+    );
+    remediations.drafted(incidentId);
+    remediations.dryRunPassed(incidentId, dryRun);
+    remediations.awaitingApproval(incidentId, {
+      analysis: investigation.analysis,
+      diagnosis: investigation.diagnosis,
+      dryRun,
+      evidenceJustification:
+        investigation.pendingAction.proposal.evidenceJustification,
+      pendingDecision,
+      subagents: investigation.subagents,
+    });
+    remediations.applied(
+      incidentId,
+      {
+        ...pendingDecision,
+        decidedAt: "2026-08-28T12:00:01.500Z",
+        decision: "allow",
+      },
+      { ...dryRun.candidate, hash: dryRun.candidateHash },
+    );
+    remediations.verifying(incidentId);
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime: {
+        executeBaseline: () => new Promise(() => undefined),
+        executeSmoke: () => new Promise(() => undefined),
+      },
+      trustedDestination,
+    });
+
+    expect(coordinator.readMissionControl().activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "run-live-replay:executing",
+          scope: "REPLAY",
+          status: "ACTIVE",
+        }),
+        expect.objectContaining({
+          id: "run-live-control:executing",
+          scope: "CONTROL",
+          status: "ACTIVE",
+        }),
+      ]),
+    );
+
+    const otherIncidentBaseline = {
+      ...baselineManifest,
+      incidentId: "incident-stale",
+    };
+    const otherBaseline = {
+      ...baselineManifest,
+      runId: "run-stale-baseline",
+    };
+    latestRuns.set(
+      "replay",
+      activeRun(
+        createReplayRunManifest(
+          otherIncidentBaseline,
+          "run-stale-replay",
+          "BLACKBOX-CANARY-stale-replay",
+          "2026-08-28T12:00:04.000Z",
+          policy,
+        ),
+      ),
+    );
+    latestRuns.set(
+      "control",
+      activeRun(
+        createControlRunManifest(
+          otherBaseline,
+          "run-stale-control",
+          "BLACKBOX-CANARY-stale-control",
+          "BLACKBOX-CONTROL-stale",
+          "2026-08-28T12:00:05.000Z",
+          policy,
+          trustedDestination,
+        ),
+      ),
+    );
+
+    expect(
+      coordinator
+        .readMissionControl()
+        .activity.filter(
+          (item) => item.scope === "REPLAY" || item.scope === "CONTROL",
+        ),
+    ).toEqual([]);
+    remediations.close();
+  });
+
   it("does not investigate an inconclusive finalized Baseline Run", async () => {
     const harness = createFinalizingHarness("INCONCLUSIVE");
     const executeInvestigation = vi.fn();
@@ -268,6 +748,321 @@ describe("Incident coordinator observability", () => {
 
     expect(executeInvestigation).not.toHaveBeenCalled();
     expect(remediations.read(started.incidentId)).toBeUndefined();
+    remediations.close();
+  });
+
+  it("resumes an unmatched finalized Vulnerable Baseline without starting a duplicate", async () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const manifest = createBaselineRunManifest(
+      "incident-recovery",
+      "run-recovery",
+      "BLACKBOX-CANARY-recovery",
+      "2026-08-27T20:00:00.000Z",
+      "tool-model",
+      "vendor/tool-model",
+      policy,
+      "http://127.0.0.1:3000",
+    );
+    harness.ledger.createRun(manifest);
+    harness.ledger.finalizeBaseline(manifest.runId);
+    const executeInvestigation = vi.fn(async (request) =>
+      investigationEvidence(request, [trustedDestination]),
+    );
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime: {
+        executeBaseline: vi.fn(),
+        executeInvestigation,
+        executeSmoke: () => new Promise(() => undefined),
+      },
+      trustedDestination,
+    });
+
+    expect(executeInvestigation).not.toHaveBeenCalled();
+    expect(remediations.read(manifest.incidentId)).toBeUndefined();
+    coordinator.recover();
+    await vi.waitFor(() => {
+      expect(remediations.read(manifest.incidentId)).toMatchObject({
+        baseline: { runId: manifest.runId },
+        remediation: { state: "AWAITING_APPROVAL" },
+      });
+    });
+    expect(coordinator.start()).toEqual({
+      activeRunId: manifest.runId,
+      started: false,
+    });
+    expect(executeInvestigation).toHaveBeenCalledOnce();
+    coordinator.recover();
+    expect(remediations.read(manifest.incidentId)?.remediation.state).toBe(
+      "AWAITING_APPROVAL",
+    );
+    expect(executeInvestigation).toHaveBeenCalledOnce();
+    await coordinator.shutdown();
+    remediations.close();
+  });
+
+  it("finalizes a stranded Baseline on process recovery without replaying the Victim Agent", () => {
+    const ledger = new SqliteEvidenceLedger(":memory:");
+    const policy = createBaselineCapabilityPolicy();
+    const manifest = createBaselineRunManifest(
+      "incident-stranded-baseline",
+      "run-stranded-baseline",
+      "BLACKBOX-CANARY-stranded-baseline",
+      "2026-08-27T20:00:00.000Z",
+      "tool-model",
+      "vendor/tool-model",
+      policy,
+      "http://127.0.0.1:3000",
+    );
+    ledger.createRun(manifest);
+    ledger.append([
+      {
+        id: `${manifest.runId}:state:PREPARING`,
+        occurredAt: manifest.createdAt,
+        runId: manifest.runId,
+        source: "blackbox",
+        state: "PREPARING",
+        type: "run.state_changed",
+      },
+      {
+        id: `${manifest.runId}:state:EXECUTING`,
+        occurredAt: "2026-08-27T20:00:00.001Z",
+        runId: manifest.runId,
+        source: "blackbox",
+        state: "EXECUTING",
+        type: "run.state_changed",
+      },
+    ]);
+    const executeBaseline = vi.fn();
+    const remediations = new SqliteRemediationStore(":memory:");
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime: {
+        executeBaseline,
+        executeSmoke: () => new Promise(() => undefined),
+      },
+      trustedDestination:
+        "http://127.0.0.1:3000/api/trusted-destination",
+    });
+
+    coordinator.recover();
+
+    const recovered = ledger.readBundle(manifest.runId);
+    expect(recovered).toMatchObject({
+      completeness: {
+        complete: false,
+        missing: expect.arrayContaining(["infrastructure.failure"]),
+      },
+      verdict: "INCONCLUSIVE",
+    });
+    expect(recovered?.timeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message:
+            "BLACKBOX restarted before the Baseline Run completed; the Victim Agent turn was not replayed",
+          stage: "blackbox-recovery",
+          type: "run.failed",
+        }),
+      ]),
+    );
+    expect(coordinator.readMissionControl().status).toBe(
+      "BASELINE_INCONCLUSIVE",
+    );
+    expect(executeBaseline).not.toHaveBeenCalled();
+    coordinator.recover();
+    expect(
+      ledger
+        .readBundle(manifest.runId)
+        ?.timeline.filter((record) => record.type === "run.failed"),
+    ).toHaveLength(1);
+    ledger.close();
+    remediations.close();
+  });
+
+  it("fails a stranded investigation on process recovery without replaying its side effects", () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const manifest = createBaselineRunManifest(
+      "incident-stranded-investigation",
+      "run-stranded-investigation",
+      "BLACKBOX-CANARY-stranded-investigation",
+      "2026-08-27T20:00:00.000Z",
+      "tool-model",
+      "vendor/tool-model",
+      policy,
+      "http://127.0.0.1:3000",
+    );
+    harness.ledger.createRun(manifest);
+    const bundle = harness.ledger.finalizeBaseline(manifest.runId);
+    const remediations = new SqliteRemediationStore(":memory:");
+    remediations.start(
+      manifest.incidentId,
+      manifest.runId,
+      bundle.bundleHash,
+      "persisted-run-capability",
+    );
+    const executeInvestigation = vi.fn();
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime: {
+        executeBaseline: vi.fn(),
+        executeInvestigation,
+        executeSmoke: () => new Promise(() => undefined),
+      },
+      trustedDestination,
+    });
+
+    expect(coordinator.readMissionControl()).toMatchObject({
+      operationActive: false,
+      status: "INVESTIGATING",
+    });
+
+    coordinator.recover();
+
+    expect(remediations.read(manifest.incidentId)?.remediation).toMatchObject({
+      error:
+        "BLACKBOX restarted before the TrueForge investigation completed; no agent actions were replayed",
+      state: "VALIDATION_FAILED",
+    });
+    expect(coordinator.readMissionControl()).toMatchObject({
+      operationActive: false,
+      status: "VALIDATION_FAILED",
+    });
+    expect(executeInvestigation).not.toHaveBeenCalled();
+    remediations.close();
+  });
+
+  it("fails stranded verification on process recovery without repeating tool side effects", () => {
+    const harness = createFinalizingHarness("VULNERABLE");
+    const trustedDestination =
+      "http://127.0.0.1:3000/api/trusted-destination";
+    const policy = createBaselineCapabilityPolicy([trustedDestination]);
+    const manifest = createBaselineRunManifest(
+      "incident-stranded-verification",
+      "run-stranded-verification",
+      "BLACKBOX-CANARY-stranded-verification",
+      "2026-08-27T20:00:00.000Z",
+      "tool-model",
+      "vendor/tool-model",
+      policy,
+      "http://127.0.0.1:3000",
+    );
+    harness.ledger.createRun(manifest);
+    const bundle = harness.ledger.finalizeBaseline(manifest.runId);
+    const evidence = investigationEvidence(
+      {
+        bundle,
+        mcpAuthorization: "persisted-run-capability",
+        policy: policy.read(),
+        signal: new AbortController().signal,
+        trustedDestination,
+      },
+      [trustedDestination],
+    );
+    const pendingDecision = {
+      actionId: evidence.pendingAction.actionId,
+      callId: evidence.pendingAction.callId,
+      sessionId: evidence.pendingAction.sessionId,
+      threadId: evidence.pendingAction.threadId,
+      toolName: evidence.pendingAction.toolName,
+      turnId: evidence.pendingAction.turnId,
+    };
+    const remediations = new SqliteRemediationStore(":memory:");
+    remediations.start(
+      manifest.incidentId,
+      manifest.runId,
+      bundle.bundleHash,
+      "persisted-run-capability",
+    );
+    remediations.drafted(manifest.incidentId);
+    const dryRun = policy.dryRunPatch(evidence.pendingAction.proposal.patch);
+    remediations.dryRunPassed(manifest.incidentId, dryRun);
+    remediations.awaitingApproval(manifest.incidentId, {
+      analysis: evidence.analysis,
+      diagnosis: evidence.diagnosis,
+      dryRun,
+      evidenceJustification:
+        evidence.pendingAction.proposal.evidenceJustification,
+      pendingDecision,
+      subagents: evidence.subagents,
+    });
+    const decidedAt = "2026-08-27T20:00:03.000Z";
+    const application = policy.applyPatch(evidence.pendingAction.proposal.patch, {
+      actionId: pendingDecision.actionId,
+      callId: pendingDecision.callId,
+      decidedAt,
+      sessionId: pendingDecision.sessionId,
+      threadId: pendingDecision.threadId,
+      turnId: pendingDecision.turnId,
+    });
+    if (application.status === "STALE") {
+      throw new Error("Test Policy Patch unexpectedly became stale");
+    }
+    remediations.applied(
+      manifest.incidentId,
+      { ...pendingDecision, decidedAt, decision: "allow" },
+      application.readback,
+    );
+    remediations.verifying(manifest.incidentId);
+    const executeReplay = vi.fn();
+    const executeControl = vi.fn();
+    const coordinator = new IncidentCoordinator({
+      baseUrl: "http://127.0.0.1:3000",
+      ledger: harness.ledger,
+      model: { alias: "tool-model", id: "vendor/tool-model" },
+      policy,
+      remediations,
+      runtime: {
+        executeBaseline: vi.fn(),
+        executeControl,
+        executeReplay,
+        executeSmoke: () => new Promise(() => undefined),
+      },
+      trustedDestination,
+    });
+
+    expect(coordinator.readMissionControl()).toMatchObject({
+      operationActive: false,
+      status: "VERIFYING",
+    });
+
+    coordinator.recover();
+
+    expect(remediations.read(manifest.incidentId)?.remediation).toMatchObject({
+      error:
+        "BLACKBOX restarted before Remediation verification completed; the applied Capability Policy remains effective and no verification actions were replayed",
+      policyReadback: application.readback,
+      state: "VALIDATION_FAILED",
+    });
+    expect(policy.read()).toEqual(application.readback);
+    expect(coordinator.readMissionControl()).toMatchObject({
+      operationActive: false,
+      status: "VALIDATION_FAILED",
+      verification: {
+        control: { state: "INCONCLUSIVE" },
+        replay: { state: "INCONCLUSIVE" },
+      },
+    });
+    expect(executeReplay).not.toHaveBeenCalled();
+    expect(executeControl).not.toHaveBeenCalled();
     remediations.close();
   });
 
@@ -416,6 +1211,7 @@ describe("Incident coordinator observability", () => {
 
 function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
   let manifest: BaselineRunManifest | undefined;
+  let bundle: BaselineEvidenceBundle | undefined;
   const finalized = vi.fn();
   const records: EvidenceRecord[] = [];
   const ledger: EvidenceLedger = {
@@ -431,7 +1227,7 @@ function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
     finalizeBaseline(): BaselineEvidenceBundle {
       finalized();
       if (manifest === undefined) throw new Error("Run manifest unavailable");
-      return {
+      bundle = {
         bundleHash: "a".repeat(64),
         completeness: {
           complete: verdict === "VULNERABLE",
@@ -443,6 +1239,7 @@ function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
         timeline: [],
         verdict,
       };
+      return bundle;
     },
     finalizeControl(): never {
       throw new Error("Control finalization is not used by this test");
@@ -450,10 +1247,25 @@ function createFinalizingHarness(verdict: BaselineEvidenceBundle["verdict"]) {
     finalizeReplay(): never {
       throw new Error("Replay finalization is not used by this test");
     },
-    readBundle: () => undefined,
+    readBundle: (runId) =>
+      bundle?.manifest.runId === runId ? bundle : undefined,
+    readLatestRun(kind) {
+      return manifest?.kind === kind
+        ? bundle === undefined
+          ? { manifest, timeline: records }
+          : { bundle, manifest, timeline: records }
+        : undefined;
+    },
     readManifest(): RunManifest {
       if (manifest === undefined) throw new Error("Run manifest unavailable");
       return manifest;
+    },
+    readRun(runId) {
+      return manifest?.runId === runId
+        ? bundle === undefined
+          ? { manifest, timeline: records }
+          : { bundle, manifest, timeline: records }
+        : undefined;
     },
   };
   return { finalized, ledger, records };

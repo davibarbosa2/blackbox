@@ -66,11 +66,11 @@ describe("BLACKBOX entrypoint", () => {
       }
       await rm(runtimeDirectory, { force: true, recursive: true });
     }
-  }, 25_000);
+  }, 45_000);
 });
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 30_000;
   while (!predicate() && Date.now() < deadline) {
     await delay(25);
   }

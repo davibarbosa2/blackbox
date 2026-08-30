@@ -12,6 +12,50 @@ import {
 } from "../../src/remediation/store.js";
 
 describe("durable remediation failures", () => {
+  it("records sanitized investigation milestones idempotently and resets a retried session", () => {
+    const store = new SqliteRemediationStore(":memory:");
+    store.start("incident-1", "run-1", "a".repeat(64));
+    const first = {
+      kind: "TURN_STARTED" as const,
+      occurredAt: "2026-08-28T12:00:00.000Z",
+      sessionId: "session-1",
+      sourceEventId: "event-turn-1",
+    };
+    store.recordInvestigationMilestone("incident-1", first);
+    store.recordInvestigationMilestone("incident-1", first);
+    store.recordInvestigationMilestone("incident-1", {
+      kind: "INVESTIGATOR_MCP_INITIALIZED",
+      occurredAt: "2026-08-28T12:00:01.000Z",
+      sessionId: "session-1",
+      sourceEventId: "event-mcp-1",
+    });
+
+    expect(store.read("incident-1")?.remediation).toMatchObject({
+      investigationProgress: {
+        milestones: [first, { sourceEventId: "event-mcp-1" }],
+        sessionId: "session-1",
+      },
+      state: "INVESTIGATING",
+    });
+
+    const retry = {
+      ...first,
+      sessionId: "session-2",
+      sourceEventId: "event-turn-2",
+    };
+    store.recordInvestigationMilestone("incident-1", retry);
+    store.drafted("incident-1");
+
+    expect(store.read("incident-1")?.remediation).toMatchObject({
+      investigationProgress: {
+        milestones: [retry],
+        sessionId: "session-2",
+      },
+      state: "DRAFTED",
+    });
+    store.close();
+  });
+
   it("preserves the dry-run and observed pending identifiers", () => {
     const trustedDestination = "https://trusted.example/messages";
     const policy = createBaselineCapabilityPolicy([trustedDestination]);

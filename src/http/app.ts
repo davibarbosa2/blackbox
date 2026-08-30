@@ -7,6 +7,7 @@ import {
   localhostAllowedOrigins,
   originValidationResponse,
 } from "@modelcontextprotocol/server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import type { EvlogVariables } from "evlog/hono";
 import { Hono } from "hono";
 
@@ -43,6 +44,7 @@ interface BlackboxAppOptions {
     baseUrl: string;
     modelAlias: string;
     modelId: string;
+    trueForgeUrl?: string;
   };
   observability?: BlackboxObservability;
   runtimeDirectory: string;
@@ -51,6 +53,7 @@ interface BlackboxAppOptions {
 
 export interface BlackboxApplication {
   app: Hono<EvlogVariables>;
+  recover(): void;
   shutdown(): Promise<void>;
 }
 
@@ -78,6 +81,9 @@ export function createBlackboxApplication(
     : undefined;
   return {
     app: buildApp(coordinator, incident, options.observability),
+    recover(): void {
+      incident?.coordinator.recover();
+    },
     async shutdown(): Promise<void> {
       await Promise.all([coordinator.shutdown(), incident?.shutdown()]);
     },
@@ -125,6 +131,9 @@ function createIncidentApplication(
     runtime: options.trueForgeRuntime,
     trustedDestination,
   };
+  if (incidentOptions.trueForgeUrl !== undefined) {
+    coordinatorOptions.trueForgeUrl = incidentOptions.trueForgeUrl;
+  }
   if (options.observability !== undefined) {
     coordinatorOptions.observeBaselineRun =
       options.observability.observeBaselineRun;
@@ -173,6 +182,19 @@ function buildApp(
   app.get("/healthz", (context) => context.json({ status: "ok" }));
 
   if (incident !== undefined) {
+    app.use(
+      "/assets/*",
+      serveStatic({
+        onFound: (_path, context) => {
+          context.header("Cache-Control", "public, max-age=31536000, immutable");
+        },
+        root: "./dist/mission-control",
+      }),
+    );
+    app.get(
+      "/",
+      serveStatic({ path: "./dist/mission-control/index.html" }),
+    );
     app.all("/mcp", (context) => {
       const request = context.req.raw;
       const rejected =
@@ -257,6 +279,9 @@ function buildApp(
       }
       return context.json(result);
     });
+    app.get("/api/mission-control", (context) =>
+      context.json(incident.coordinator.readMissionControl()),
+    );
     app.post("/api/incidents/:incidentId/remediation-decisions", async (context) => {
       const incidentId = context.req.param("incidentId");
       if (!UUID_V4.test(incidentId)) {

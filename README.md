@@ -141,6 +141,26 @@ Remediation become `VERIFIED`. Any readback, replay, control, or finalization
 failure reports `VALIDATION_FAILED`; the restrictive policy remains applied and
 is not automatically rolled back.
 
+## Mission Control
+
+Build the browser client, start the real BLACKBOX and TrueForge services, and
+open Mission Control with:
+
+```bash
+pnpm demo
+```
+
+The opening explains the controlled synthetic Support Ticket scenario before
+one start launches the real Incident workflow. Mission Control reconstructs its
+state from BLACKBOX, shows only sanitized durable progress, pauses on the exact
+pending `apply_policy_patch` action, and submits the human approval or denial
+through the product HTTP boundary. After approval, policy readback, equivalent
+Attack Replay, and legitimate Control Run proceed automatically. Containment is
+shown only when all three finalized Evidence Bundles support it.
+
+Refreshing or reconnecting does not create a new Incident or duplicate the
+pending decision. Use `Ctrl-C` in the terminal to stop the owned services.
+
 ## Configuration
 
 | Variable | Required | Default |
@@ -163,5 +183,6 @@ Daytona:
 ```bash
 pnpm lint
 pnpm typecheck
+pnpm build
 pnpm test
 ```
