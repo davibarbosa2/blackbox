@@ -40,13 +40,36 @@ export interface RemediationAcceptanceResult {
   replay: ReplayEvidenceBundle;
 }
 
+export type RemediationAcceptanceStage =
+  | "approval"
+  | "readback"
+  | "baseline"
+  | "replay"
+  | "control"
+  | "finalization"
+  | "validation"
+  | "timeout";
+
+export class RemediationAcceptanceError extends Error {
+  readonly stage: RemediationAcceptanceStage;
+
+  constructor(stage: RemediationAcceptanceStage, detail: string) {
+    super(detail);
+    this.name = "RemediationAcceptanceError";
+    this.stage = stage;
+  }
+}
+
 export async function runRemediationAcceptanceViaHttp(
   baseUrl: string,
   options: BaselineAcceptanceClientOptions = {},
 ): Promise<RemediationAcceptanceResult> {
   const incident = await runInvestigationAcceptanceViaHttp(baseUrl, options);
   if (incident.remediation.state !== "AWAITING_APPROVAL") {
-    throw new Error("Incident did not reach AWAITING_APPROVAL");
+    throw new RemediationAcceptanceError(
+      "approval",
+      "Incident did not reach AWAITING_APPROVAL",
+    );
   }
   return waitForRemediationVerificationViaHttp(
     baseUrl,
@@ -82,7 +105,8 @@ export async function waitForRemediationVerificationViaHttp(
     },
   );
   if (decision.status !== 202) {
-    throw new Error(
+    throw new RemediationAcceptanceError(
+      "approval",
       `BLACKBOX refused Remediation approval with HTTP ${decision.status}`,
     );
   }
@@ -96,12 +120,25 @@ export async function waitForRemediationVerificationViaHttp(
     );
     const incident = durableIncidentReadSchema.safeParse(await response.json());
     if (response.status !== 200 || !incident.success) {
-      throw new Error(
+      throw new RemediationAcceptanceError(
+        "readback",
         `BLACKBOX Remediation read failed with HTTP ${response.status}`,
       );
     }
     if (incident.data.remediation.state === "VALIDATION_FAILED") {
-      throw new Error(
+      const verification = incident.data.remediation.verification;
+      const stage =
+        verification?.replay !== undefined &&
+        (verification.replay.verdict !== "PROTECTED" ||
+          !verification.replay.complete)
+          ? "replay"
+          : verification?.control !== undefined &&
+              (verification.control.controlResult !== "PASSED" ||
+                !verification.control.complete)
+            ? "control"
+            : "validation";
+      throw new RemediationAcceptanceError(
+        stage,
         `BLACKBOX Remediation validation failed: ${incident.data.remediation.error}`,
       );
     }
@@ -109,7 +146,8 @@ export async function waitForRemediationVerificationViaHttp(
       incident.data.remediation.state === "DENIED" ||
       incident.data.remediation.state === "STALE"
     ) {
-      throw new Error(
+      throw new RemediationAcceptanceError(
+        "approval",
         `BLACKBOX Remediation ended in ${incident.data.remediation.state}`,
       );
     }
@@ -120,7 +158,10 @@ export async function waitForRemediationVerificationViaHttp(
     await delay(options.pollIntervalMs ?? 500, options.signal);
   }
   if (verified === undefined || verified.remediation.state !== "VERIFIED") {
-    throw new Error(`Incident ${context.incidentId} verification timed out`);
+    throw new RemediationAcceptanceError(
+      "timeout",
+      `Incident ${context.incidentId} verification timed out`,
+    );
   }
 
   const [baselineResponse, replayResponse, controlResponse] = await Promise.all([
@@ -153,7 +194,10 @@ export async function waitForRemediationVerificationViaHttp(
     !replay.success ||
     !control.success
   ) {
-    throw new Error("BLACKBOX verification Evidence Bundles were unavailable");
+    throw new RemediationAcceptanceError(
+      "finalization",
+      "BLACKBOX verification Evidence Bundles were unavailable",
+    );
   }
   assertVerifiedEvidence(context, verified, baseline.data, replay.data, control.data);
   return {
@@ -188,7 +232,10 @@ function assertVerifiedEvidence(
   control: ControlEvidenceBundle,
 ): void {
   if (incident.remediation.state !== "VERIFIED") {
-    throw new Error("Remediation did not reach VERIFIED");
+    throw new RemediationAcceptanceError(
+      "validation",
+      "Remediation did not reach VERIFIED",
+    );
   }
   const remediation = incident.remediation;
   if (
@@ -201,7 +248,10 @@ function assertVerifiedEvidence(
     remediation.policyReadback.hash !== context.candidateHash ||
     remediation.policyReadback.version !== context.candidateVersion
   ) {
-    throw new Error("Verified Remediation baseline or policy readback mismatched");
+    throw new RemediationAcceptanceError(
+      "baseline",
+      "Verified Remediation baseline or policy readback mismatched",
+    );
   }
   const expectedLifecycle = [
     "DRAFTED",
@@ -217,7 +267,10 @@ function assertVerifiedEvidence(
       expectedLifecycle,
     )
   ) {
-    throw new Error("Verified Remediation lifecycle evidence was incomplete");
+    throw new RemediationAcceptanceError(
+      "validation",
+      "Verified Remediation lifecycle evidence was incomplete",
+    );
   }
   if (
     replay.bundleHash !== remediation.verification.replay.bundleHash ||
@@ -228,7 +281,10 @@ function assertVerifiedEvidence(
     replay.manifest.fingerprints.policy !== context.candidateHash ||
     !equivalentFingerprints(baseline, replay)
   ) {
-    throw new Error("Attack Replay evidence did not prove equivalent protection");
+    throw new RemediationAcceptanceError(
+      "replay",
+      "Attack Replay evidence did not prove equivalent protection",
+    );
   }
   const replayDenied = replay.timeline.some(
     (record) =>
@@ -245,7 +301,10 @@ function assertVerifiedEvidence(
       record.payload === replay.manifest.canarySecret,
   );
   if (!replayDenied || !replayCutoff || replayLeaked) {
-    throw new Error("Attack Replay denial or bounded no-receipt proof was missing");
+    throw new RemediationAcceptanceError(
+      "replay",
+      "Attack Replay denial or bounded no-receipt proof was missing",
+    );
   }
   if (
     control.bundleHash !== remediation.verification.control.bundleHash ||
@@ -261,7 +320,10 @@ function assertVerifiedEvidence(
         record.payload === control.manifest.controlMessage,
     )
   ) {
-    throw new Error("Control Run evidence did not prove the trusted workflow");
+    throw new RemediationAcceptanceError(
+      "control",
+      "Control Run evidence did not prove the trusted workflow",
+    );
   }
 }
 

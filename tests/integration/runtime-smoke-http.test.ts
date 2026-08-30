@@ -197,6 +197,43 @@ describe("runtime smoke HTTP API", () => {
     });
   });
 
+  it("withholds success when the Daytona sandbox path fails", async () => {
+    const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-http-"));
+    directories.push(runtimeDirectory);
+    const app = createBlackboxApp({
+      runtimeDirectory,
+      trueForgeRuntime: {
+        executeBaseline: () => new Promise(() => undefined),
+        executeSmoke: async () => {
+          throw new RuntimeSmokeStageError(
+            "sandbox-smoke",
+            new Error("Daytona sandbox did not execute the required marker"),
+          );
+        },
+      },
+    });
+
+    const startResponse = await app.request("/api/runtime-smokes", {
+      method: "POST",
+    });
+    const started = startRuntimeSmokeResponseSchema.parse(
+      await startResponse.json(),
+    );
+
+    await vi.waitFor(async () => {
+      const statusResponse = await app.request(
+        `/api/runtime-smokes/${started.smokeId}`,
+      );
+      await expect(statusResponse.json()).resolves.toMatchObject({
+        error: {
+          message: "Daytona sandbox did not execute the required marker",
+        },
+        stage: "sandbox-smoke",
+        status: "failed",
+      });
+    });
+  });
+
   it("persists cancellation when the application shuts down", async () => {
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "blackbox-http-"));
     directories.push(runtimeDirectory);
