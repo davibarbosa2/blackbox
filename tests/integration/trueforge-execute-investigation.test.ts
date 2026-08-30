@@ -337,6 +337,24 @@ describe("TrueForge Incident investigation", () => {
         sourceEventId: "event-sandbox-created",
       },
       {
+        kind: "ANALYSIS_EXECUTION_STARTED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-exec-call",
+      },
+      {
+        kind: "ANALYSIS_EXECUTION_COMPLETED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-exec-response",
+      },
+      {
+        kind: "POLICY_PATCH_DRAFTED",
+        occurredAt: CREATED_AT,
+        sessionId: "session-investigation-1",
+        sourceEventId: "event-apply-call",
+      },
+      {
         kind: "POLICY_ACTION_OBSERVED",
         occurredAt: CREATED_AT,
         sessionId: "session-investigation-1",

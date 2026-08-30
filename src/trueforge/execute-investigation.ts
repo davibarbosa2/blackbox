@@ -90,6 +90,7 @@ async function executeInvestigation(
     "EvidenceProvenanceVerifier" | "PolicyPatchReviewer"
   >();
   const policyCallEvents = new Set<string>();
+  const analysisCallIds = new Set<string>();
   for await (const event of stream) {
     liveEvents.push(event);
     const milestone = milestoneFromEvent(
@@ -97,6 +98,7 @@ async function executeInvestigation(
       session.data.id,
       threadRoles,
       policyCallEvents,
+      analysisCallIds,
     );
     if (milestone !== undefined && onMilestone !== undefined) {
       try {
@@ -222,17 +224,37 @@ function milestoneFromEvent(
     "EvidenceProvenanceVerifier" | "PolicyPatchReviewer"
   >,
   policyCallEvents: Set<string>,
+  analysisCallIds: Set<string>,
 ): InvestigationMilestone | undefined {
   if (event.type === "model.message") {
-    if (
-      event.toolCalls?.some(
-        (call) =>
-          call.function.name === "apply_policy_patch" &&
-          call.toolInfo.type === "mcp" &&
-          call.toolInfo.serverName === INVESTIGATOR_MCP_NAME,
-      ) === true
-    ) {
+    const policyCall = event.toolCalls?.find(
+      (call) =>
+        call.function.name === "apply_policy_patch" &&
+        call.toolInfo.type === "mcp" &&
+        call.toolInfo.serverName === INVESTIGATOR_MCP_NAME,
+    );
+    if (policyCall !== undefined) {
       policyCallEvents.add(event.id);
+      return investigationMilestoneSchema.parse({
+        kind: "POLICY_PATCH_DRAFTED",
+        occurredAt: event.createdAt,
+        sessionId,
+        sourceEventId: event.id,
+      });
+    }
+    const analysisCall = event.toolCalls?.find(
+      (call) =>
+        call.function.name === "exec" &&
+        call.toolInfo.type === "truefoundry-system",
+    );
+    if (analysisCall !== undefined) {
+      analysisCallIds.add(analysisCall.id);
+      return investigationMilestoneSchema.parse({
+        kind: "ANALYSIS_EXECUTION_STARTED",
+        occurredAt: event.createdAt,
+        sessionId,
+        sourceEventId: event.id,
+      });
     }
     return undefined;
   }
@@ -269,6 +291,11 @@ function milestoneFromEvent(
     (event.threadId === null || event.threadId === "main")
   ) {
     kind = "ANALYSIS_SANDBOX_CREATED";
+  } else if (
+    event.type === "tool.response" &&
+    analysisCallIds.has(event.toolCallId)
+  ) {
+    kind = "ANALYSIS_EXECUTION_COMPLETED";
   } else if (
     event.type === "tool.approval_required" &&
     event.toolCalls.length === 1 &&

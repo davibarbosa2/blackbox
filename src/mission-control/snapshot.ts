@@ -178,10 +178,21 @@ function timelineActivity(
   finalizedTitle: string,
 ): MissionControlActivity[] {
   const activity: MissionControlActivity[] = [];
+  const completedToolNames = new Set(
+    timeline
+      .filter((record) => record.type === "tool.completed")
+      .map((record) => record.toolName),
+  );
   const currentStateId = timeline
     .filter((record) => record.type === "run.state_changed")
     .at(-1)?.id;
   for (const record of timeline) {
+    if (
+      record.type === "tool.called" &&
+      completedToolNames.has(record.toolName)
+    ) {
+      continue;
+    }
     const item = activityFromRecord(
       record,
       evidence,
@@ -244,6 +255,21 @@ function activityFromRecord(
       scope,
       source: "TRUEFORGE",
       status: "COMPLETED",
+      title: record.toolName,
+    };
+  }
+  if (record.type === "tool.completed") {
+    return {
+      detail: record.succeeded
+        ? "The Support Agent completed this Scenario tool through the durable MCP boundary."
+        : "The Scenario tool returned a failure; its private input and output remain hidden.",
+      evidence,
+      id: record.id,
+      kind: "tool",
+      occurredAt: record.occurredAt,
+      scope,
+      source: "TRUEFORGE",
+      status: record.succeeded ? "COMPLETED" : "FAILED",
       title: record.toolName,
     };
   }
@@ -411,59 +437,93 @@ function activityFromInvestigationMilestone(
     milestone.kind === "INVESTIGATOR_MCP_INITIALIZED" ||
     milestone.kind === "POLICY_REVIEW_COMPLETED" ||
     milestone.kind === "EVIDENCE_REVIEW_COMPLETED" ||
+    milestone.kind === "ANALYSIS_EXECUTION_COMPLETED" ||
     milestone.kind === "POLICY_ACTION_OBSERVED" ||
     (milestone.kind === "POLICY_REVIEW_STARTED" &&
       (progressKinds.has("POLICY_REVIEW_COMPLETED") || investigationComplete)) ||
     (milestone.kind === "EVIDENCE_REVIEW_STARTED" &&
       (progressKinds.has("EVIDENCE_REVIEW_COMPLETED") || investigationComplete)) ||
-    (milestone.kind === "ANALYSIS_SANDBOX_CREATED" && investigationComplete) ||
+    (milestone.kind === "ANALYSIS_SANDBOX_CREATED" &&
+      (progressKinds.has("ANALYSIS_EXECUTION_STARTED") ||
+        investigationComplete)) ||
+    (milestone.kind === "ANALYSIS_EXECUTION_STARTED" &&
+      (progressKinds.has("ANALYSIS_EXECUTION_COMPLETED") ||
+        investigationComplete)) ||
+    (milestone.kind === "POLICY_PATCH_DRAFTED" &&
+      (progressKinds.has("POLICY_ACTION_OBSERVED") ||
+        investigationComplete)) ||
     (milestone.kind === "TURN_STARTED" &&
       (progressKinds.has("POLICY_ACTION_OBSERVED") || investigationComplete));
   const display = {
-    ANALYSIS_SANDBOX_CREATED: {
+    ANALYSIS_EXECUTION_COMPLETED: {
+      detail: "The isolated Daytona analysis command completed; raw output remains in evidence, not this UI.",
       kind: "sandbox" as const,
       source: "DAYTONA" as const,
-      title: "Daytona sandbox analysis running",
+      title: "Sandbox evidence analysis completed",
+    },
+    ANALYSIS_EXECUTION_STARTED: {
+      detail: "The investigator started an isolated evidence analysis command in Daytona.",
+      kind: "sandbox" as const,
+      source: "DAYTONA" as const,
+      title: "Running evidence analysis",
+    },
+    ANALYSIS_SANDBOX_CREATED: {
+      detail: "TrueForge created the isolated Daytona workspace used for evidence analysis.",
+      kind: "sandbox" as const,
+      source: "DAYTONA" as const,
+      title: "Daytona analysis workspace created",
     },
     EVIDENCE_REVIEW_COMPLETED: {
+      detail: "The focused evidence-provenance review completed in the TrueForge session.",
       kind: "subagent" as const,
       source: "TRUEFORGE" as const,
       title: "Evidence Provenance Verifier",
     },
     EVIDENCE_REVIEW_STARTED: {
+      detail: "A focused subagent is checking that the diagnosis traces to finalized evidence.",
       kind: "subagent" as const,
       source: "TRUEFORGE" as const,
       title: "Evidence provenance review started",
     },
     INVESTIGATOR_MCP_INITIALIZED: {
+      detail: "The investigator connected to the scoped BLACKBOX evidence tools.",
       kind: "phase" as const,
       source: "TRUEFORGE" as const,
       title: "Incident evidence connected",
     },
     POLICY_ACTION_OBSERVED: {
+      detail: "TrueForge paused the exact apply_policy_patch action at the human approval boundary.",
       kind: "phase" as const,
       source: "TRUEFORGE" as const,
       title: "Policy Patch proposal observed",
     },
     POLICY_REVIEW_COMPLETED: {
+      detail: "The focused policy review completed without widening protected-document access.",
       kind: "subagent" as const,
       source: "TRUEFORGE" as const,
       title: "Policy Patch Reviewer",
     },
     POLICY_REVIEW_STARTED: {
+      detail: "A focused subagent is reviewing the narrowest defensible Capability Policy change.",
       kind: "subagent" as const,
       source: "TRUEFORGE" as const,
       title: "Policy Patch review started",
     },
+    POLICY_PATCH_DRAFTED: {
+      detail: "The investigator drafted a scoped Policy Patch; it is not active and cannot apply without approval.",
+      kind: "phase" as const,
+      source: "TRUEFORGE" as const,
+      title: "Policy Patch drafted",
+    },
     TURN_STARTED: {
+      detail: "TrueForge started the evidence-backed Incident investigation turn.",
       kind: "phase" as const,
       source: "TRUEFORGE" as const,
       title: "TrueForge investigation started",
     },
   }[milestone.kind];
   return {
-    detail:
-      "Sanitized progress derived from durable TrueForge stream metadata; no prompt, secret, or reasoning content is retained.",
+    detail: display.detail,
     evidence: null,
     id: milestone.sourceEventId,
     kind: display.kind,
