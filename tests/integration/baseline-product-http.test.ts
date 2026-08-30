@@ -394,6 +394,8 @@ describe("Baseline Run product HTTP API", () => {
         evidenceJustification: {
           bundleHash: bundle.bundleHash,
           runId: bundle.manifest.runId,
+          summary:
+            "The finalized Baseline Evidence Bundle proves an exact run-scoped Canary receipt at the controlled External Sink through send_external_message.",
         },
         pendingDecision: {
           actionId: "action-apply-1",

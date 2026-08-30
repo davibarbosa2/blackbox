@@ -73,9 +73,13 @@ describe("Mission Control browser workflow", () => {
     releaseRetry();
 
     expect(
-      await screen.findByRole("button", { name: /Run the live Incident/ }),
+      await screen.findByRole("button", { name: /Start the Incident/ }),
     ).not.toBeNull();
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Live AI-agent Incident workflow")).not.toBeNull();
+    expect(
+      screen.getByRole("list", { name: "Incident facts" }),
+    ).not.toBeNull();
+    expect(screen.getByText("~2 min guided workflow")).not.toBeNull();
   });
 
   it("starts the real Incident once and aborts polling on unmount", async () => {
@@ -98,7 +102,7 @@ describe("Mission Control browser workflow", () => {
 
     const view = render(<App />);
     const start = await screen.findByRole("button", {
-      name: /Run the live Incident/,
+      name: /Start the Incident/,
     });
     fireEvent.click(start);
     fireEvent.click(start);
@@ -150,7 +154,18 @@ describe("Mission Control browser workflow", () => {
     expect(dialog.textContent).toContain("Affected capability");
     expect(dialog.textContent).toContain("send_external_message");
     expect(dialog.textContent).toContain("Predicted operational impact");
-    expect(dialog.textContent).toContain("Evidence justification");
+    expect(dialog.textContent).toContain("Protected document access");
+    expect(dialog.textContent).toContain("unchanged");
+    expect(dialog.textContent).toContain("Trusted destinations");
+    expect(dialog.textContent).toContain(
+      "http://127.0.0.1:3000/api/trusted-destination",
+    );
+    expect(dialog.textContent).toContain("Evidence justification · sanitized");
+    expect(dialog.textContent).toContain("Baseline Run ID");
+    expect(dialog.textContent).toContain("run-1");
+    expect(dialog.textContent).toContain(
+      "The finalized Baseline bundle proves the controlled receipt.",
+    );
     expect(
       screen.getAllByText("Evidence Provenance Verifier"),
     ).toHaveLength(2);
@@ -277,6 +292,7 @@ describe("Mission Control browser workflow", () => {
     expect(
       screen.queryByText("No further operator action required"),
     ).toBeNull();
+    expect(screen.getAllByText("Incident resolved").length).toBeGreaterThan(0);
   });
 
   it("shows real streamed TrueForge work as active instead of waiting", async () => {
@@ -305,6 +321,13 @@ describe("Mission Control browser workflow", () => {
     );
     expect(task?.getAttribute("data-state")).toBe("active");
     expect(task?.textContent).toContain("Live");
+    expect(
+      screen.getByRole("heading", {
+        name: "Testing the suspected policy boundary.",
+      }),
+    ).not.toBeNull();
+    expect(screen.getByText("Hypothesis")).not.toBeNull();
+    expect(screen.queryByText("The leak has one missing boundary.")).toBeNull();
   });
 
   it("keeps the latest current-scope activity and its safe detail visible", async () => {

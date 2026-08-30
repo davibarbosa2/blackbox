@@ -242,7 +242,7 @@ function OpeningView(props: OpeningViewProps): ReactNode {
 
       <main className="opening-main">
         <section className="opening-copy" aria-labelledby="opening-title">
-          <p className="eyebrow">Live AI-agent incident replay</p>
+          <p className="eyebrow">Live AI-agent Incident workflow</p>
           <h1 id="opening-title">
             Watch an AI agent leak a secret. <span>Then stop it.</span>
           </h1>
@@ -259,14 +259,14 @@ function OpeningView(props: OpeningViewProps): ReactNode {
               onClick={props.onStart}
               type="button"
             >
-              <span>{starting ? "Starting the Incident…" : "Run the live Incident"}</span>
+              <span>{starting ? "Starting the Incident…" : "Start the Incident"}</span>
               {starting
                 ? <LoaderCircle aria-hidden="true" className="loading-icon" size={16} />
                 : <ArrowRight aria-hidden="true" size={16} />}
             </button>
-            <span className="run-time">~2 min live run</span>
+            <span className="run-time">~2 min guided workflow</span>
           </div>
-          <ul className="opening-facts" aria-label="Run facts">
+          <ul className="opening-facts" aria-label="Incident facts">
             <li><strong>01</strong> Real TrueForge agents</li>
             <li><strong>02</strong> One human approval</li>
             <li><strong>03</strong> Three evidence bundles</li>
@@ -282,7 +282,7 @@ function OpeningView(props: OpeningViewProps): ReactNode {
         <section className="scenario-card" aria-labelledby="scenario-title">
           <div className="scenario-heading">
             <div>
-              <p className="eyebrow">The controlled incident</p>
+              <p className="eyebrow">The controlled Attack Scenario</p>
               <h2 id="scenario-title">One ticket. One synthetic secret.</h2>
             </div>
             <span className="scenario-badge">Safe to demo</span>
@@ -299,7 +299,7 @@ function OpeningView(props: OpeningViewProps): ReactNode {
       </main>
 
       <footer className="opening-footer">
-        <span>BLACKBOX / forensic replay room</span>
+        <span>BLACKBOX / incident response room</span>
         <span>Evidence-backed · human-approved</span>
       </footer>
     </div>
@@ -567,7 +567,7 @@ function AgentActivityDock(props: AgentActivityDockProps): ReactNode {
               </div>
               {recent.length === 0 ? (
                 <p className="activity-recent-empty">
-                  New durable actions will appear here as the run advances.
+                  New durable actions will appear here as the workflow advances.
                 </p>
               ) : (
                 <ol className="activity-dock-list">
@@ -844,22 +844,28 @@ function BaselineScene(props: SceneProps): ReactNode {
 
 function InvestigationScene(props: SceneProps): ReactNode {
   const awaitingApproval = props.snapshot.phase === "APPROVAL";
+  const diagnosisEstablished = props.snapshot.status !== "INVESTIGATING";
   return (
     <section className="scene-grid investigation-scene" aria-labelledby="investigation-scene-title">
       <div className="causal-canvas breached-canvas">
         <div className="scene-heading">
           <div>
             <p className="eyebrow">Breach reconstruction</p>
-            <h2 id="investigation-scene-title">The leak has one missing boundary.</h2>
+            <h2 id="investigation-scene-title">
+              {diagnosisEstablished
+                ? "The evidence confirms a missing boundary."
+                : "Testing the suspected policy boundary."}
+            </h2>
           </div>
           <span className="breach-badge">Leak proven</span>
         </div>
         <ScenarioPath mode="baseline" snapshot={props.snapshot} />
         <div className="diagnosis-line">
-          <span>Diagnosis</span>
+          <span>{diagnosisEstablished ? "Diagnosis" : "Hypothesis"}</span>
           <strong>
-            Outbound messages can target any destination. Policy remains
-            unchanged until approval.
+            {diagnosisEstablished
+              ? "send_external_message had no destination allowlist. Policy remains unchanged until approval."
+              : "The Baseline Run proves the leak. TrueForge is testing whether a destination allowlist is the narrowest valid fix."}
           </strong>
         </div>
       </div>
@@ -1399,6 +1405,8 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
     props.decisionPending && props.command.active === null;
   const diff = approval.diff[0];
   const trustedDestination = diff.after[0] ?? "Trusted Destination";
+  const trustedDestinations =
+    approval.predictedOperationalImpact.trustedDestinations;
   return (
     <dialog
       aria-labelledby="approval-title"
@@ -1461,7 +1469,7 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
             </article>
             <article>
               <span className="decision-icon success" aria-hidden="true"><Check size={14} /></span>
-              <div><small>What stays working</small><strong>Document access + trusted support delivery</strong></div>
+              <div><small>What stays working</small><strong>Protected document access unchanged</strong></div>
             </article>
             <article>
               <span className="decision-icon live" aria-hidden="true"><RefreshCw size={14} /></span>
@@ -1474,7 +1482,10 @@ function ApprovalDialog(props: ApprovalDialogProps): ReactNode {
             <div className="technical-proof-grid">
               <div><span>Affected capability</span><code>{approval.affectedCapability}</code></div>
               <div><span>Predicted operational impact</span><code>{approval.predictedOperationalImpact.deniedDestinations}</code></div>
-              <div><span>Evidence justification</span><code>{approval.evidenceJustification.summary}</code></div>
+              <div><span>Protected document access</span><code>{approval.predictedOperationalImpact.protectedDocumentAccess}</code></div>
+              <div><span>Trusted destinations</span><code>{trustedDestinations.join(", ")}</code></div>
+              <div><span>Evidence justification · sanitized</span><code>{approval.evidenceJustification.summary}</code></div>
+              <div><span>Baseline Run ID</span><code>{approval.evidenceJustification.runId}</code></div>
               <div><span>Evidence bundle</span><code>{approval.evidenceJustification.bundleHash}</code></div>
               <div><span>Expected policy result</span><code>{approval.expectedReplayBehavior.policyDecision} at {approval.expectedReplayBehavior.blockedAt}</code></div>
               <div><span>Expected base</span><code>v{approval.base.version} · {approval.base.hash}</code></div>
@@ -1609,7 +1620,7 @@ function Brand(): ReactNode {
 function sceneCopy(snapshot: MissionControlSnapshot): SceneCopy {
   switch (snapshot.status) {
     case "READY":
-      return { description: "The controlled scenario is ready.", eyebrow: "Ready", title: "Run the live Incident", tone: "neutral" };
+      return { description: "The controlled scenario is ready.", eyebrow: "Ready", title: "Start the Incident", tone: "neutral" };
     case "BASELINE_RUNNING":
       return baselineProgress(snapshot).scene;
     case "INVESTIGATING":
@@ -1792,7 +1803,7 @@ function investigationSceneCopy(
         ? "The isolated sandbox is testing the evidence-derived policy boundary."
         : "The leak is proven. TrueForge is checking its cause and the narrowest defensible boundary.",
     eyebrow: "02 · TrueForge Investigation",
-    title: title ?? "Finding the missing boundary",
+    title: title ?? "Testing the policy boundary",
     tone: "live",
   };
 }
@@ -1891,7 +1902,7 @@ function activityDockState(
   if (isLiveSnapshot(snapshot)) return "Live";
   if (isLiveStatus(snapshot.status)) return "No active executor";
   if (snapshot.status === "AWAITING_APPROVAL") return "Paused for decision";
-  if (snapshot.status === "VERIFIED") return "Run complete";
+  if (snapshot.status === "VERIFIED") return "Incident resolved";
   if (snapshot.status === "VALIDATION_FAILED") return "Claim withheld";
   return "Durable history";
 }
