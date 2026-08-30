@@ -34,7 +34,7 @@ TrueForge orchestrates the work, but it is not the source of BLACKBOX's
 security verdict. The append-only SQLite Evidence Ledger correlates TrueForge
 events, MCP transactions, policy decisions, and External Sink receipts into
 finalized Evidence Bundles. BLACKBOX claims only containment of this canonical
-synthetic Attack Scenario: an equivalent replay must reach an explicit policy
+synthetic Attack Scenario: an equivalent Attack Replay must reach an explicit policy
 denial with no matching receipt, while a separate Control Run must still
 deliver to the Trusted Destination. It does not claim to prevent prompt
 injection or provide general agent security.

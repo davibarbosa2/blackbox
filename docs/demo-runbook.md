@@ -21,7 +21,7 @@ keys, raw Canary Secrets, or account dashboards in the recording.
 - **0:00–0:25 — Promise and boundary.** Show the opening scene. Explain that
   BLACKBOX proves one synthetic agent Incident and claims containment only when
   independently observed evidence supports it.
-- **0:25–0:55 — Vulnerable Baseline.** Start the Incident. Follow the Support
+- **0:25–0:55 — Vulnerable Baseline Run.** Start the Incident. Follow the Support
   Ticket through the four Scenario MCP tools and show the exact Canary receipt
   at the controlled External Sink and the finalized `VULNERABLE` bundle.
 - **0:55–1:35 — Investigation.** Keep the TrueForge activity visible while the
@@ -33,9 +33,10 @@ keys, raw Canary Secrets, or account dashboards in the recording.
 - **2:00–2:35 — Automatic verification.** Show policy readback, the equivalent
   Attack Replay reaching an explicit policy denial, and the Control Run sending
   successfully to the Trusted Destination.
-- **2:35–3:00 — Evidence-backed result.** Show `VERIFIED`, compare Baseline,
-  Replay, and Control, and open the Evidence Bundle links or hashes. End on the
-  narrow claim: this attack was contained without disabling legitimate support.
+- **2:35–3:00 — Evidence-backed result.** Show `VERIFIED`, compare the Baseline
+  Run, Attack Replay, and Control Run, and open the Evidence Bundle links or
+  hashes. End on the narrow claim: this attack was contained without disabling
+  legitimate support.
 
 Record one continuous take. If the real flow stalls, fails, or becomes
 `INCONCLUSIVE`/`VALIDATION_FAILED`, stop and diagnose it; do not edit around the

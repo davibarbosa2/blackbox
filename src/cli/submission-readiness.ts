@@ -111,14 +111,23 @@ function checkCurrentContents(paths: string[]): void {
 }
 
 function checkPublishedHistory(): void {
-  const objects = lines(git("rev-list", "--objects", "--remotes=origin"));
+  const objects = lines(
+    git("rev-list", "--objects", "--remotes=origin", "HEAD"),
+  );
   const paths = objects.flatMap((object) => {
     const separator = object.indexOf(" ");
     return separator === -1 ? [] : [object.slice(separator + 1)];
   });
   assertNoForbiddenPaths(paths, "Published Git history");
   assertNoCredentials(
-    git("log", "-p", "--format=", "--no-ext-diff", "--remotes=origin"),
+    git(
+      "log",
+      "-p",
+      "--format=",
+      "--no-ext-diff",
+      "--remotes=origin",
+      "HEAD",
+    ),
     "Published Git history",
   );
   process.stdout.write("Published Git history: passed\n");

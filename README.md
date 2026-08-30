@@ -2,7 +2,7 @@
 
 BLACKBOX investigates one compromised AI-agent Incident, prepares a
 least-privilege Remediation for human approval, and verifies the result by
-replaying the same attack and a legitimate control workflow.
+replaying the same attack and running a legitimate Control Run.
 
 The canonical Victim Agent is a Support Agent processing a synthetic,
 untrusted Support Ticket. The ticket leads it to read a run-scoped Canary
@@ -97,8 +97,8 @@ not hard-coded into the product. `TRUEFORGE_MODEL_ALIAS` is the local alias
 BLACKBOX registers for that id; TrueForge addresses it as
 `openrouter/<alias>`. The shown model is the last validated example, not a
 guarantee of future provider availability. Keep the model and alias unchanged
-from preflight through a Baseline/Replay equivalence set; changing either
-creates a new configuration fingerprint.
+from preflight through a Baseline Run/Attack Replay equivalence set; changing
+either creates a new configuration fingerprint.
 
 The remaining `.env.example` defaults bind both local services to loopback and
 store runtime state below ignored `.blackbox/runtime/`. Choose unused ports if
@@ -114,14 +114,14 @@ This builds Mission Control, starts BLACKBOX and pinned TrueForge, waits for
 their health checks, and opens the local browser. Click **Start Incident**
 once. BLACKBOX then configures OpenRouter and Daytona and:
 
-1. resets the synthetic scenario and runs the vulnerable Baseline;
+1. resets the synthetic scenario and runs the vulnerable Baseline Run;
 2. starts the TrueForge investigation automatically;
 3. delegates to two focused subagents and executes analysis in Daytona;
 4. pauses on the exact `apply_policy_patch` action;
 5. displays the diff, evidence, base hash, and impact for approval or denial;
 6. after approval, reads the policy back and automatically runs the equivalent
    Attack Replay and legitimate Control Run;
-7. presents the final Baseline/Replay/Control comparison.
+7. presents the final Baseline Run/Attack Replay/Control Run comparison.
 
 Do not start a second Incident while the first is running. Refreshing Mission
 Control reconstructs the durable Incident and pending approval without
@@ -140,7 +140,7 @@ Bundles:
 
 Only successful policy readback plus all three complete bundles permits
 `VERIFIED`. Missing tool events, mismatched receipts, infrastructure failures,
-non-equivalent replay, or failed control produce `INCONCLUSIVE` or
+non-equivalent Attack Replay, or failed Control Run produce `INCONCLUSIVE` or
 `VALIDATION_FAILED`, never inferred success.
 
 Mission Control links to the machine-readable bundles and shows their stable
@@ -165,9 +165,9 @@ sandbox, an `exec` result with exit code `0` and `BLACKBOX_DAYTONA_OK`, live and
 persisted event reconciliation, and clean shutdown.
 
 The resumable reliability gate runs the smoke and then requires three
-consecutive complete Baseline → Attack Replay → Control equivalence sets. It
-rejects incomplete, duplicated, differently fingerprinted, or inconclusive
-attempts and writes a credential-free report to:
+consecutive complete Baseline Run → Attack Replay → Control Run equivalence
+sets. It rejects incomplete, duplicated, differently fingerprinted, or
+inconclusive attempts and writes a credential-free report to:
 
 ```text
 .blackbox/runtime/reliability/<configuration-fingerprint>/result.json
