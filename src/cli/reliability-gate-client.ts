@@ -1,14 +1,65 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { z } from "zod";
 
 import type { RuntimeConfig } from "../config.js";
-import type { RemediationAcceptanceResult } from "./remediation-acceptance-client.js";
-import { createModelFingerprint } from "../scenario/definition.js";
+import { createBaselineCapabilityPolicy } from "../policy/capability-policy.js";
+import {
+  createBaselineRunManifest,
+  createControlRunManifest,
+  createReplayRunManifest,
+} from "../scenario/definition.js";
+import { BaselineAcceptanceError } from "./baseline-acceptance-client.js";
+import { InvestigationAcceptanceError } from "./investigation-acceptance-client.js";
+import {
+  RemediationAcceptanceError,
+  type RemediationAcceptanceResult,
+} from "./remediation-acceptance-client.js";
+import { RuntimeSmokeClientError } from "./runtime-smoke-client.js";
 
 const REQUIRED_CONSECUTIVE_SETS = 3;
+
+const reliabilityFailureGateSchema = z.enum([
+  "attempt.duplicate",
+  "attempt.interrupted",
+  "baseline.evidence",
+  "baseline.finalization",
+  "baseline.verdict",
+  "configuration.run_fingerprints",
+  "control.evidence",
+  "control.finalization",
+  "control.result",
+  "evidence.canary_uniqueness",
+  "evidence.cross_run_leak",
+  "evidence.finalization",
+  "evidence.run_correlation",
+  "evidence.validation",
+  "execution.runtime",
+  "execution.timeout",
+  "investigation.evidence",
+  "preflight.configuration",
+  "preflight.health",
+  "preflight.model",
+  "preflight.model_tool_path",
+  "preflight.runtime",
+  "preflight.sandbox",
+  "remediation.approval",
+  "remediation.validation",
+  "remediation.verification",
+  "remediation.verified",
+  "replay.equivalence",
+  "replay.evidence",
+  "replay.explicit_denial",
+  "replay.finalization",
+  "replay.verdict",
+  "resume.evidence_readback",
+  "resume.summary_mismatch",
+]);
+
+type ReliabilityFailureGate = z.infer<typeof reliabilityFailureGateSchema>;
 
 const fingerprintsSchema = z.object({
   agent: z.string(),
@@ -45,7 +96,17 @@ const rejectedAttemptSchema = z.object({
   completedAt: z.string(),
   detail: z.string(),
   durationMs: z.number().nonnegative(),
-  failedGate: z.string(),
+  evidence: z
+    .array(
+      z.object({
+        bundleHash: z.string(),
+        canarySha256: z.string().length(64),
+        observedPayloadsSha256: z.array(z.string().length(64)),
+        runId: z.string(),
+      }),
+    )
+    .optional(),
+  failedGate: reliabilityFailureGateSchema,
   runtimeDirectory: z.string(),
   startedAt: z.string(),
   status: z.literal("REJECTED"),
@@ -70,19 +131,24 @@ const activeAttemptSchema = z.object({
   type: z.enum(["PREFLIGHT", "EQUIVALENCE_SET"]),
 });
 
+const reliabilityConfigurationSchema = z.object({
+  baselineFingerprints: fingerprintsSchema,
+  controlFingerprints: fingerprintsSchema,
+  fingerprint: z.string().length(64),
+  modelAlias: z.string(),
+  modelFingerprint: z.string().length(64),
+  modelId: z.string(),
+  provider: z.literal("openrouter"),
+  requiredConsecutiveSets: z.literal(REQUIRED_CONSECUTIVE_SETS),
+  replayFingerprints: fingerprintsSchema,
+  trueForgeModel: z.string(),
+});
+
 export const reliabilityGateReportSchema = z.object({
   acceptedSets: z.array(acceptedSetSchema),
   activeAttempt: activeAttemptSchema.optional(),
   completedAt: z.string().optional(),
-  configuration: z.object({
-    fingerprint: z.string().length(64),
-    modelAlias: z.string(),
-    modelFingerprint: z.string().length(64),
-    modelId: z.string(),
-    provider: z.literal("openrouter"),
-    requiredConsecutiveSets: z.literal(REQUIRED_CONSECUTIVE_SETS),
-    trueForgeModel: z.string(),
-  }),
+  configuration: reliabilityConfigurationSchema,
   preflights: z.array(preflightSchema),
   rejectedAttempts: z.array(rejectedAttemptSchema),
   schemaVersion: z.literal(1),
@@ -90,6 +156,19 @@ export const reliabilityGateReportSchema = z.object({
   status: z.enum(["RUNNING", "FAILED", "PASSED"]),
   supersededSets: z.array(acceptedSetSchema),
   updatedAt: z.string(),
+}).superRefine((report, context) => {
+  if (
+    report.status === "PASSED" &&
+    (report.acceptedSets.length !== REQUIRED_CONSECUTIVE_SETS ||
+      report.activeAttempt !== undefined ||
+      report.completedAt === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "A passed reliability report requires exactly three accepted sets",
+      path: ["status"],
+    });
+  }
 });
 
 export type ReliabilityGateReport = z.infer<typeof reliabilityGateReportSchema>;
@@ -116,7 +195,7 @@ export interface ReliabilityEquivalenceSetEvidence {
     result: "PASSED" | "INCONCLUSIVE";
   };
   incidentId: string;
-  remediationState: string;
+  remediationState: RemediationAcceptanceResult["incident"]["remediation"]["state"];
   replay: ReliabilityRunEvidence & {
     baselineRunId: string;
     explicitDenial: boolean;
@@ -128,6 +207,13 @@ export interface ReliabilityEquivalenceSetEvidence {
 export interface ReliabilityAttemptContext {
   attemptId: string;
   runtimeDirectory: string;
+}
+
+export interface ReliabilityAcceptedSetContext extends ReliabilityAttemptContext {
+  baselineRunId: string;
+  controlRunId: string;
+  incidentId: string;
+  replayRunId: string;
 }
 
 interface ReliabilityPreflightEvidence {
@@ -145,35 +231,117 @@ interface RunReliabilityGateOptions {
   preflight(
     attempt: ReliabilityAttemptContext,
   ): Promise<ReliabilityPreflightEvidence>;
+  revalidateSet(
+    acceptedSet: ReliabilityAcceptedSetContext,
+  ): Promise<ReliabilityEquivalenceSetEvidence>;
   signal?: AbortSignal;
 }
 
 export class ReliabilityGateFailure extends Error {
-  readonly failedGate: string;
+  readonly failedGate: ReliabilityFailureGate;
 
-  constructor(failedGate: string, detail: string) {
+  constructor(failedGate: ReliabilityFailureGate, detail: string) {
     super(`${failedGate}: ${detail}`);
     this.name = "ReliabilityGateFailure";
     this.failedGate = failedGate;
   }
 }
 
+class AcceptedSetRevalidationFailure extends ReliabilityGateFailure {
+  readonly acceptedSet: z.infer<typeof acceptedSetSchema>;
+
+  constructor(
+    acceptedSet: z.infer<typeof acceptedSetSchema>,
+    failure: ReliabilityGateFailure,
+  ) {
+    super(
+      failure.failedGate,
+      failure.message.slice(failure.failedGate.length + 2),
+    );
+    this.name = "AcceptedSetRevalidationFailure";
+    this.acceptedSet = acceptedSet;
+  }
+}
+
 export function reliabilityConfigurationFingerprint(
   config: RuntimeConfig,
 ): string {
-  return sha256(
-    JSON.stringify({
-      blackbox: config.blackbox,
-      modelAlias: config.openRouter.modelAlias,
-      modelId: config.openRouter.modelId,
-      provider: "openrouter",
-      schemaVersion: 1,
-      trueForge: {
-        host: config.trueForge.host,
-        port: config.trueForge.port,
-      },
-    }),
+  return createReliabilityConfiguration(config).fingerprint;
+}
+
+export function createReliabilityConfiguration(
+  config: RuntimeConfig,
+): z.infer<typeof reliabilityConfigurationSchema> {
+  const baseUrl = `http://${config.blackbox.host}:${config.blackbox.port}`;
+  const trustedDestination = `${baseUrl}/api/trusted-destination`;
+  const policy = createBaselineCapabilityPolicy([trustedDestination]);
+  const baselineManifest = createBaselineRunManifest(
+    "configuration-incident",
+    "configuration-run",
+    "configuration-canary",
+    "1970-01-01T00:00:00.000Z",
+    config.openRouter.modelAlias,
+    config.openRouter.modelId,
+    policy,
+    baseUrl,
   );
+  const baselineFingerprints = baselineManifest.fingerprints;
+  const basePolicy = policy.read();
+  const application = policy.applyPatch(
+    {
+      destinationAllowlist: [trustedDestination],
+      expectedBaseHash: basePolicy.hash,
+      expectedBaseVersion: basePolicy.version,
+    },
+    {
+      actionId: "configuration-action",
+      callId: "configuration-call",
+      decidedAt: "1970-01-01T00:00:00.000Z",
+      sessionId: "configuration-session",
+      threadId: "main",
+      turnId: "configuration-turn",
+    },
+  );
+  if (application.status === "STALE") {
+    throw new Error("Reliability configuration Policy Patch became stale");
+  }
+  const replayFingerprints = createReplayRunManifest(
+    baselineManifest,
+    "configuration-replay",
+    "configuration-replay-canary",
+    "1970-01-01T00:00:01.000Z",
+    policy,
+  ).fingerprints;
+  const controlFingerprints = createControlRunManifest(
+    baselineManifest,
+    "configuration-control",
+    "configuration-control-canary",
+    "configuration-control-message",
+    "1970-01-01T00:00:02.000Z",
+    policy,
+    trustedDestination,
+  ).fingerprints;
+  const material = {
+    baselineFingerprints,
+    blackbox: config.blackbox,
+    controlFingerprints,
+    modelAlias: config.openRouter.modelAlias,
+    modelId: config.openRouter.modelId,
+    provider: "openrouter" as const,
+    requiredConsecutiveSets: REQUIRED_CONSECUTIVE_SETS,
+    replayFingerprints,
+    schemaVersion: 1,
+    trueForge: {
+      host: config.trueForge.host,
+      port: config.trueForge.port,
+    },
+    trueForgeModel: `openrouter/${config.openRouter.modelAlias}`,
+  };
+  return reliabilityConfigurationSchema.parse({
+    ...material,
+    fingerprint: sha256(JSON.stringify(material)),
+    modelFingerprint: baselineFingerprints.model,
+  });
 }
 
 export async function runReliabilityGate(
@@ -191,13 +359,22 @@ export async function runReliabilityGate(
   );
   let report =
     (await readReport(resultPath)) ??
-    createReport(options.config, configurationFingerprint, now());
-  if (report.status === "PASSED") return report;
+    createReport(options.config, now());
 
   if (report.activeAttempt !== undefined) {
     report = rejectInterruptedAttempt(report, now());
     await writeReport(resultPath, report);
   }
+
+  try {
+    await revalidateAcceptedSets(options, report);
+  } catch (error) {
+    if (!(error instanceof AcceptedSetRevalidationFailure)) throw error;
+    report = rejectAcceptedSequence(report, error, now());
+    await writeReport(resultPath, report);
+    throw error;
+  }
+  if (report.status === "PASSED") return report;
 
   options.signal?.throwIfAborted();
   report = await runPreflight(options, report, resultPath, now);
@@ -217,31 +394,32 @@ export async function runReliabilityGate(
       const failure =
         error instanceof ReliabilityGateFailure
           ? error
-          : new ReliabilityGateFailure("execution.remediation", message(error));
+          : classifyExecutionFailure(error);
       report = rejectActiveAttempt(report, failure, now);
       await writeReport(resultPath, report);
       throw failure;
     }
 
+    let accepted: z.infer<typeof acceptedSetSchema>;
     try {
-      const accepted = validateSet(report, evidence, attempt.context, now());
-      report = {
-        ...report,
-        acceptedSets: [...report.acceptedSets, accepted],
-        activeAttempt: undefined,
-        status: "RUNNING",
-        updatedAt: accepted.completedAt,
-      };
-      await writeReport(resultPath, report);
+      accepted = validateSet(report, evidence, attempt.context, now());
     } catch (error) {
       const failure =
         error instanceof ReliabilityGateFailure
           ? error
           : new ReliabilityGateFailure("evidence.validation", message(error));
-      report = rejectActiveAttempt(report, failure, now);
+      report = rejectActiveAttempt(report, failure, now, true, evidence);
       await writeReport(resultPath, report);
       throw failure;
     }
+    report = {
+      ...report,
+      acceptedSets: [...report.acceptedSets, accepted],
+      activeAttempt: undefined,
+      status: "RUNNING",
+      updatedAt: accepted.completedAt,
+    };
+    await writeReport(resultPath, report);
   }
 
   const completedAt = now().toISOString();
@@ -271,7 +449,7 @@ export function formatReliabilityGateSummary(
   }
   for (const attempt of report.rejectedAttempts) {
     lines.push(
-      `Rejected attempt ${attempt.attemptId}: gate=${attempt.failedGate} detail=${attempt.detail}`,
+      `Rejected attempt ${attempt.attemptId}: gate=${attempt.failedGate} detail=${attempt.detail} duration_ms=${attempt.durationMs}`,
     );
   }
   return lines.join("\n");
@@ -283,72 +461,106 @@ export function reliabilityEvidenceFromRemediation(
   const { baseline, replay, control } = result;
   return {
     baseline: {
-      bundleHash: baseline.bundleHash,
-      canarySecret: baseline.manifest.canarySecret,
-      complete: baseline.completeness.complete,
-      finalizedAt: baseline.finalizedAt,
-      fingerprints: baseline.manifest.fingerprints,
-      incidentId: baseline.manifest.incidentId,
-      missingEvidence: baseline.completeness.missing,
-      observedPayloads: baseline.timeline.flatMap((record) =>
-        record.type === "message.received" ||
-        record.type === "message.received_trusted"
-          ? [record.payload]
-          : [],
-      ),
-      runId: baseline.manifest.runId,
-      timelineRunIds: baseline.timeline.map((record) => record.runId),
+      ...projectRunEvidence(baseline),
       verdict: baseline.verdict,
     },
     control: {
+      ...projectRunEvidence(control),
       baselineRunId: control.manifest.baselineRunId,
-      bundleHash: control.bundleHash,
-      canarySecret: control.manifest.canarySecret,
-      complete: control.completeness.complete,
-      finalizedAt: control.finalizedAt,
-      fingerprints: control.manifest.fingerprints,
-      incidentId: control.manifest.incidentId,
-      missingEvidence: control.completeness.missing,
-      observedPayloads: control.timeline.flatMap((record) =>
-        record.type === "message.received" ||
-        record.type === "message.received_trusted"
-          ? [record.payload]
-          : [],
-      ),
       result: control.controlResult,
-      runId: control.manifest.runId,
-      timelineRunIds: control.timeline.map((record) => record.runId),
     },
     incidentId: result.incident.incidentId,
     remediationState: result.incident.remediation.state,
     replay: {
+      ...projectRunEvidence(replay),
       baselineRunId: replay.manifest.baselineRunId,
-      bundleHash: replay.bundleHash,
-      canarySecret: replay.manifest.canarySecret,
-      complete: replay.completeness.complete,
       explicitDenial: replay.timeline.some(
         (record) => record.type === "policy.evaluated" && record.decision === "deny",
       ),
-      finalizedAt: replay.finalizedAt,
-      fingerprints: replay.manifest.fingerprints,
-      incidentId: replay.manifest.incidentId,
       matchingCanaryReceipt: replay.timeline.some(
         (record) =>
           record.type === "message.received" &&
           record.payload === replay.manifest.canarySecret,
       ),
-      missingEvidence: replay.completeness.missing,
-      observedPayloads: replay.timeline.flatMap((record) =>
-        record.type === "message.received" ||
-        record.type === "message.received_trusted"
-          ? [record.payload]
-          : [],
-      ),
-      runId: replay.manifest.runId,
-      timelineRunIds: replay.timeline.map((record) => record.runId),
       verdict: replay.verdict,
     },
   };
+}
+
+type AcceptanceEvidenceBundle =
+  | RemediationAcceptanceResult["baseline"]
+  | RemediationAcceptanceResult["control"]
+  | RemediationAcceptanceResult["replay"];
+
+function projectRunEvidence(
+  bundle: AcceptanceEvidenceBundle,
+): ReliabilityRunEvidence {
+  return {
+    bundleHash: bundle.bundleHash,
+    canarySecret: bundle.manifest.canarySecret,
+    complete: bundle.completeness.complete,
+    finalizedAt: bundle.finalizedAt,
+    fingerprints: bundle.manifest.fingerprints,
+    incidentId: bundle.manifest.incidentId,
+    missingEvidence: bundle.completeness.missing,
+    observedPayloads: bundle.timeline.flatMap((record) =>
+      record.type === "message.received" ||
+      record.type === "message.received_trusted"
+        ? [record.payload]
+        : [],
+    ),
+    runId: bundle.manifest.runId,
+    timelineRunIds: bundle.timeline.map((record) => record.runId),
+  };
+}
+
+async function revalidateAcceptedSets(
+  options: RunReliabilityGateOptions,
+  report: ReliabilityGateReport,
+): Promise<void> {
+  let validatedReport: ReliabilityGateReport = {
+    ...report,
+    acceptedSets: [],
+  };
+  for (const acceptedSet of report.acceptedSets) {
+    const context: ReliabilityAcceptedSetContext = {
+      attemptId: acceptedSet.attemptId,
+      baselineRunId: acceptedSet.baseline.runId,
+      controlRunId: acceptedSet.control.runId,
+      incidentId: acceptedSet.incidentId,
+      replayRunId: acceptedSet.replay.runId,
+      runtimeDirectory: acceptedSet.runtimeDirectory,
+    };
+    try {
+      const evidence = await options.revalidateSet(context);
+      const revalidated = validateSet(
+        validatedReport,
+        evidence,
+        context,
+        new Date(acceptedSet.completedAt),
+        acceptedSet.startedAt,
+      );
+      requireGate(
+        isDeepStrictEqual(revalidated, acceptedSet),
+        "resume.summary_mismatch",
+        `durable evidence no longer matches accepted attempt ${acceptedSet.attemptId}`,
+      );
+      validatedReport = {
+        ...validatedReport,
+        acceptedSets: [...validatedReport.acceptedSets, revalidated],
+      };
+    } catch (error) {
+      throw new AcceptedSetRevalidationFailure(
+        acceptedSet,
+        error instanceof ReliabilityGateFailure
+          ? error
+          : new ReliabilityGateFailure(
+              "resume.evidence_readback",
+              message(error),
+            ),
+      );
+    }
+  }
 }
 
 async function runPreflight(
@@ -360,8 +572,9 @@ async function runPreflight(
   const attempt = startAttempt(sourceReport, options.config, "PREFLIGHT", now());
   let report = attempt.report;
   await writeReport(resultPath, report);
+  let evidence: ReliabilityPreflightEvidence;
   try {
-    const evidence = await options.preflight(attempt.context);
+    evidence = await options.preflight(attempt.context);
     options.signal?.throwIfAborted();
     if (evidence.modelId !== options.config.openRouter.modelId) {
       throw new ReliabilityGateFailure(
@@ -369,38 +582,38 @@ async function runPreflight(
         `returned ${evidence.modelId}, expected ${options.config.openRouter.modelId}`,
       );
     }
-    const completedAt = now().toISOString();
-    report = {
-      ...report,
-      activeAttempt: undefined,
-      preflights: [
-        ...report.preflights,
-        {
-          attemptId: attempt.context.attemptId,
-          completedAt,
-          durationMs: durationMs(report.activeAttempt?.startedAt, completedAt),
-          modelId: evidence.modelId,
-          sandboxId: evidence.sandboxId,
-          smokeId: evidence.smokeId,
-          startedAt: report.activeAttempt?.startedAt ?? completedAt,
-          status: "PASSED",
-        },
-      ],
-      status: "RUNNING",
-      updatedAt: completedAt,
-    };
-    await writeReport(resultPath, report);
-    return report;
   } catch (error) {
     if (options.signal?.aborted) throw options.signal.reason;
     const failure =
       error instanceof ReliabilityGateFailure
         ? error
-        : new ReliabilityGateFailure("preflight.runtime", message(error));
+        : classifyPreflightFailure(error);
     report = rejectActiveAttempt(report, failure, now, false);
     await writeReport(resultPath, report);
     throw failure;
   }
+  const completedAt = now().toISOString();
+  report = {
+    ...report,
+    activeAttempt: undefined,
+    preflights: [
+      ...report.preflights,
+      {
+        attemptId: attempt.context.attemptId,
+        completedAt,
+        durationMs: durationMs(report.activeAttempt?.startedAt, completedAt),
+        modelId: evidence.modelId,
+        sandboxId: evidence.sandboxId,
+        smokeId: evidence.smokeId,
+        startedAt: report.activeAttempt?.startedAt ?? completedAt,
+        status: "PASSED",
+      },
+    ],
+    status: "RUNNING",
+    updatedAt: completedAt,
+  };
+  await writeReport(resultPath, report);
+  return report;
 }
 
 function validateSet(
@@ -408,6 +621,7 @@ function validateSet(
   evidence: ReliabilityEquivalenceSetEvidence,
   attempt: ReliabilityAttemptContext,
   completed: Date,
+  persistedStartedAt?: string,
 ): z.infer<typeof acceptedSetSchema> {
   const { baseline, replay, control } = evidence;
   requireGate(
@@ -451,13 +665,21 @@ function validateSet(
     missingOrOutcome(control.missingEvidence, "incomplete"),
   );
 
-  const expectedModel = report.configuration.modelFingerprint;
   requireGate(
-    [baseline, replay, control].every(
-      (run) => run.fingerprints.model === expectedModel,
-    ),
-    "configuration.model_fingerprint",
-    `expected ${expectedModel}`,
+    isDeepStrictEqual(
+      baseline.fingerprints,
+      report.configuration.baselineFingerprints,
+    ) &&
+      isDeepStrictEqual(
+        replay.fingerprints,
+        report.configuration.replayFingerprints,
+      ) &&
+      isDeepStrictEqual(
+        control.fingerprints,
+        report.configuration.controlFingerprints,
+      ),
+    "configuration.run_fingerprints",
+    "Baseline Run fingerprints do not match the current gate configuration",
   );
   requireGate(
     replay.fingerprints.agent === baseline.fingerprints.agent &&
@@ -469,7 +691,7 @@ function validateSet(
       control.fingerprints.tools === baseline.fingerprints.tools &&
       control.fingerprints.policy === replay.fingerprints.policy,
     "replay.equivalence",
-    "Baseline, Attack Replay, and Control fingerprints did not match",
+    "Baseline Run, Attack Replay, and Control Run fingerprints did not match",
   );
   requireGate(
     evidence.incidentId === baseline.incidentId &&
@@ -484,16 +706,20 @@ function validateSet(
     "evidence crossed a Run or Incident boundary",
   );
 
+  const priorSets = [...report.supersededSets, ...report.acceptedSets];
+  const priorRejectedEvidence = report.rejectedAttempts.flatMap(
+    (attempt) => attempt.evidence ?? [],
+  );
   const canaryHashes = [
     sha256(baseline.canarySecret),
     sha256(replay.canarySecret),
     sha256(control.canarySecret),
   ];
-  const existingCanaries = report.acceptedSets.flatMap((set) => [
+  const existingCanaries = priorSets.flatMap((set) => [
     set.baseline.canarySha256,
     set.replay.canarySha256,
     set.control.canarySha256,
-  ]);
+  ]).concat(priorRejectedEvidence.map((run) => run.canarySha256));
   const allCanaries = new Set([...existingCanaries, ...canaryHashes]);
   const observedCanaries = [baseline, replay, control].map((run) =>
     run.observedPayloads.map(sha256).filter((hash) => allCanaries.has(hash)),
@@ -506,18 +732,18 @@ function validateSet(
     "Canary evidence appeared in another Run",
   );
 
-  const existingRuns = report.acceptedSets.flatMap((set) => [
+  const existingRuns = priorSets.flatMap((set) => [
     set.baseline.runId,
     set.replay.runId,
     set.control.runId,
-  ]);
+  ]).concat(priorRejectedEvidence.map((run) => run.runId));
   const runIds = [baseline.runId, replay.runId, control.runId];
   const bundleHashes = [baseline.bundleHash, replay.bundleHash, control.bundleHash];
-  const existingBundleHashes = report.acceptedSets.flatMap((set) => [
+  const existingBundleHashes = priorSets.flatMap((set) => [
     set.baseline.bundleHash,
     set.replay.bundleHash,
     set.control.bundleHash,
-  ]);
+  ]).concat(priorRejectedEvidence.map((run) => run.bundleHash));
   requireGate(
     new Set(runIds).size === runIds.length &&
       runIds.every((runId) => !existingRuns.includes(runId)) &&
@@ -535,7 +761,8 @@ function validateSet(
   );
 
   const completedAt = completed.toISOString();
-  const startedAt = report.activeAttempt?.startedAt ?? completedAt;
+  const startedAt =
+    persistedStartedAt ?? report.activeAttempt?.startedAt ?? completedAt;
   return acceptedSetSchema.parse({
     attemptId: attempt.attemptId,
     baseline: acceptedRun(baseline, "verdict", "VULNERABLE"),
@@ -617,6 +844,7 @@ function rejectActiveAttempt(
   failure: ReliabilityGateFailure,
   now: () => Date,
   resetSequence = true,
+  evidence?: ReliabilityEquivalenceSetEvidence,
 ): ReliabilityGateReport {
   const active = report.activeAttempt;
   if (active === undefined) throw new Error("No active reliability attempt");
@@ -632,6 +860,8 @@ function rejectActiveAttempt(
         completedAt,
         detail: failure.message.slice(failure.failedGate.length + 2),
         durationMs: durationMs(active.startedAt, completedAt),
+        evidence:
+          evidence === undefined ? undefined : rejectedEvidence(evidence),
         failedGate: failure.failedGate,
         runtimeDirectory: active.runtimeDirectory,
         startedAt: active.startedAt,
@@ -647,26 +877,67 @@ function rejectActiveAttempt(
   };
 }
 
+function rejectAcceptedSequence(
+  report: ReliabilityGateReport,
+  failure: AcceptedSetRevalidationFailure,
+  completed: Date,
+): ReliabilityGateReport {
+  const completedAt = completed.toISOString();
+  const acceptedSet = failure.acceptedSet;
+  const evidence = [
+    acceptedSet.baseline,
+    acceptedSet.replay,
+    acceptedSet.control,
+  ].map((run) => ({
+    bundleHash: run.bundleHash,
+    canarySha256: run.canarySha256,
+    observedPayloadsSha256: [],
+    runId: run.runId,
+  }));
+  return {
+    ...report,
+    acceptedSets: [],
+    completedAt: undefined,
+    rejectedAttempts: [
+      ...report.rejectedAttempts,
+      {
+        attemptId: acceptedSet.attemptId,
+        completedAt,
+        detail: failure.message.slice(failure.failedGate.length + 2),
+        durationMs: acceptedSet.durationMs,
+        evidence,
+        failedGate: failure.failedGate,
+        runtimeDirectory: acceptedSet.runtimeDirectory,
+        startedAt: acceptedSet.startedAt,
+        status: "REJECTED",
+        type: "EQUIVALENCE_SET",
+      },
+    ],
+    status: "FAILED",
+    supersededSets: [...report.supersededSets, ...report.acceptedSets],
+    updatedAt: completedAt,
+  };
+}
+
+function rejectedEvidence(
+  evidence: ReliabilityEquivalenceSetEvidence,
+): NonNullable<z.infer<typeof rejectedAttemptSchema>["evidence"]> {
+  return [evidence.baseline, evidence.replay, evidence.control].map((run) => ({
+    bundleHash: run.bundleHash,
+    canarySha256: sha256(run.canarySecret),
+    observedPayloadsSha256: run.observedPayloads.map(sha256),
+    runId: run.runId,
+  }));
+}
+
 function createReport(
   config: RuntimeConfig,
-  fingerprint: string,
   started: Date,
 ): ReliabilityGateReport {
   const startedAt = started.toISOString();
   return {
     acceptedSets: [],
-    configuration: {
-      fingerprint,
-      modelAlias: config.openRouter.modelAlias,
-      modelFingerprint: createModelFingerprint(
-        config.openRouter.modelAlias,
-        config.openRouter.modelId,
-      ),
-      modelId: config.openRouter.modelId,
-      provider: "openrouter",
-      requiredConsecutiveSets: REQUIRED_CONSECUTIVE_SETS,
-      trueForgeModel: `openrouter/${config.openRouter.modelAlias}`,
-    },
+    configuration: createReliabilityConfiguration(config),
     preflights: [],
     rejectedAttempts: [],
     schemaVersion: 1,
@@ -706,7 +977,7 @@ async function writeReport(
 
 function requireGate(
   condition: boolean,
-  failedGate: string,
+  failedGate: ReliabilityFailureGate,
   detail: string,
 ): asserts condition {
   if (!condition) throw new ReliabilityGateFailure(failedGate, detail);
@@ -714,6 +985,68 @@ function requireGate(
 
 function missingOrOutcome(missing: string[], outcome: string): string {
   return missing.length > 0 ? missing.join(", ") : `received ${outcome}`;
+}
+
+function classifyPreflightFailure(cause: unknown): ReliabilityGateFailure {
+  const detail = message(cause);
+  if (!(cause instanceof RuntimeSmokeClientError)) {
+    return new ReliabilityGateFailure("preflight.runtime", detail);
+  }
+  const failedGate: ReliabilityFailureGate =
+    cause.stage === "preflight"
+      ? "preflight.model_tool_path"
+      : cause.stage === "sandbox-smoke"
+        ? "preflight.sandbox"
+        : cause.stage === "configuration"
+          ? "preflight.configuration"
+          : cause.stage === "health"
+            ? "preflight.health"
+            : "preflight.runtime";
+  return new ReliabilityGateFailure(failedGate, detail);
+}
+
+function classifyExecutionFailure(cause: unknown): ReliabilityGateFailure {
+  const detail = message(cause);
+  if (cause instanceof BaselineAcceptanceError) {
+    const failedGate: ReliabilityFailureGate =
+      cause.stage === "evidence"
+        ? "baseline.evidence"
+        : cause.stage === "finalization"
+          ? "baseline.finalization"
+          : cause.stage === "timeout"
+            ? "execution.timeout"
+            : "execution.runtime";
+    return new ReliabilityGateFailure(failedGate, detail);
+  }
+  if (cause instanceof InvestigationAcceptanceError) {
+    const failedGate: ReliabilityFailureGate =
+      cause.stage === "evidence" || cause.stage === "validation"
+        ? "investigation.evidence"
+        : cause.stage === "timeout"
+          ? "execution.timeout"
+          : "execution.runtime";
+    return new ReliabilityGateFailure(failedGate, detail);
+  }
+  if (cause instanceof RemediationAcceptanceError) {
+    const failedGate: ReliabilityFailureGate =
+      cause.stage === "approval"
+        ? "remediation.approval"
+        : cause.stage === "baseline"
+          ? "baseline.evidence"
+          : cause.stage === "replay"
+            ? "replay.evidence"
+            : cause.stage === "control"
+              ? "control.evidence"
+              : cause.stage === "finalization"
+                ? "evidence.finalization"
+                : cause.stage === "validation"
+                  ? "remediation.validation"
+                  : cause.stage === "timeout"
+                    ? "execution.timeout"
+                    : "execution.runtime";
+    return new ReliabilityGateFailure(failedGate, detail);
+  }
+  return new ReliabilityGateFailure("execution.runtime", detail);
 }
 
 function durationMs(

@@ -8,6 +8,22 @@ import {
   runBaselineAcceptanceViaHttp,
 } from "./baseline-acceptance-client.js";
 
+export type InvestigationAcceptanceStage =
+  | "readback"
+  | "validation"
+  | "evidence"
+  | "timeout";
+
+export class InvestigationAcceptanceError extends Error {
+  readonly stage: InvestigationAcceptanceStage;
+
+  constructor(stage: InvestigationAcceptanceStage, detail: string) {
+    super(detail);
+    this.name = "InvestigationAcceptanceError";
+    this.stage = stage;
+  }
+}
+
 export async function runInvestigationAcceptanceViaHttp(
   baseUrl: string,
   options: BaselineAcceptanceClientOptions = {},
@@ -31,12 +47,14 @@ export async function waitForInvestigationViaHttp(
     );
     const incident = durableIncidentReadSchema.safeParse(await response.json());
     if (response.status !== 200 || !incident.success) {
-      throw new Error(
+      throw new InvestigationAcceptanceError(
+        "readback",
         `BLACKBOX Incident investigation failed with HTTP ${response.status}`,
       );
     }
     if (incident.data.remediation.state === "VALIDATION_FAILED") {
-      throw new Error(
+      throw new InvestigationAcceptanceError(
+        "validation",
         `BLACKBOX Incident investigation validation failed: ${incident.data.remediation.error}`,
       );
     }
@@ -47,7 +65,8 @@ export async function waitForInvestigationViaHttp(
     assertAcceptanceEvidence(incident.data, bundle);
     return incident.data;
   }
-  throw new Error(
+  throw new InvestigationAcceptanceError(
+    "timeout",
     `Incident ${bundle.manifest.incidentId} investigation timed out`,
   );
 }
@@ -75,7 +94,10 @@ function assertAcceptanceEvidence(
   bundle: BaselineEvidenceBundle,
 ): void {
   if (incident.remediation.state !== "AWAITING_APPROVAL") {
-    throw new Error("Investigation did not reach AWAITING_APPROVAL");
+    throw new InvestigationAcceptanceError(
+      "evidence",
+      "Investigation did not reach AWAITING_APPROVAL",
+    );
   }
   const remediation = incident.remediation;
   if (
@@ -84,7 +106,10 @@ function assertAcceptanceEvidence(
     remediation.evidenceJustification.bundleHash !== bundle.bundleHash ||
     remediation.evidenceJustification.runId !== bundle.manifest.runId
   ) {
-    throw new Error("Investigation is not correlated to the Baseline Evidence Bundle");
+    throw new InvestigationAcceptanceError(
+      "evidence",
+      "Investigation is not correlated to the Baseline Evidence Bundle",
+    );
   }
   if (
     remediation.pendingDecision.toolName !== "apply_policy_patch" ||
@@ -96,7 +121,10 @@ function assertAcceptanceEvidence(
       .split(/\r?\n/)
       .includes("BLACKBOX_INVESTIGATION_ANALYSIS_OK")
   ) {
-    throw new Error("Investigation acceptance evidence is incomplete");
+    throw new InvestigationAcceptanceError(
+      "evidence",
+      "Investigation acceptance evidence is incomplete",
+    );
   }
 }
 

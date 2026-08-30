@@ -4,7 +4,9 @@ import { z } from "zod";
 
 import {
   runtimeSmokeEvidenceSchema,
+  runtimeSmokeFailureStageSchema,
   type RuntimeSmokeEvidence,
+  type RuntimeSmokeFailureStage,
 } from "../trueforge/runtime.js";
 
 export const blackboxHealthResponseSchema = z.object({
@@ -25,7 +27,7 @@ const runtimeSmokeStatusResponseSchema = z.discriminatedUnion("status", [
   }),
   z.object({
     error: z.object({ message: z.string() }),
-    stage: z.string(),
+    stage: z.union([runtimeSmokeFailureStageSchema, z.literal("runtime")]),
     status: z.literal("failed"),
   }),
   z.object({ status: z.literal("cancelled") }),
@@ -42,6 +44,24 @@ export interface SuccessfulRuntimeSmoke {
   result: RuntimeSmokeEvidence;
   smokeId: string;
   status: "succeeded";
+}
+
+export type RuntimeSmokeClientStage =
+  | RuntimeSmokeFailureStage
+  | "runtime"
+  | "start"
+  | "status"
+  | "cancelled"
+  | "timeout";
+
+export class RuntimeSmokeClientError extends Error {
+  readonly stage: RuntimeSmokeClientStage;
+
+  constructor(stage: RuntimeSmokeClientStage, detail: string) {
+    super(detail);
+    this.name = "RuntimeSmokeClientError";
+    this.stage = stage;
+  }
 }
 
 export function formatRuntimeSmokeSuccess(
@@ -75,7 +95,10 @@ export async function runRuntimeSmokeViaHttp(
     await health.json(),
   );
   if (!health.ok || !healthBody.success) {
-    throw new Error(`BLACKBOX health check failed with HTTP ${health.status}`);
+    throw new RuntimeSmokeClientError(
+      "health",
+      `BLACKBOX health check failed with HTTP ${health.status}`,
+    );
   }
 
   const startResponse = await fetcher(`${baseUrl}/api/runtime-smokes`, {
@@ -86,7 +109,8 @@ export async function runRuntimeSmokeViaHttp(
     await startResponse.json(),
   );
   if (startResponse.status !== 202 || !started.success) {
-    throw new Error(
+    throw new RuntimeSmokeClientError(
+      "start",
       `BLACKBOX refused to start the runtime smoke with HTTP ${startResponse.status}`,
     );
   }
@@ -100,7 +124,8 @@ export async function runRuntimeSmokeViaHttp(
       await statusResponse.json(),
     );
     if (!statusResponse.ok || !status.success) {
-      throw new Error(
+      throw new RuntimeSmokeClientError(
+        "status",
         `BLACKBOX runtime smoke status failed with HTTP ${statusResponse.status}`,
       );
     }
@@ -113,18 +138,22 @@ export async function runRuntimeSmokeViaHttp(
       };
     }
     if (status.data.status === "failed") {
-      throw new Error(
-        `Runtime smoke failed at ${status.data.stage}: ${status.data.error.message}`,
+      throw new RuntimeSmokeClientError(
+        status.data.stage,
+        status.data.error.message,
       );
     }
     if (status.data.status === "cancelled") {
-      throw new Error("Runtime smoke was cancelled");
+      throw new RuntimeSmokeClientError("cancelled", "Runtime smoke was cancelled");
     }
 
     await delay(pollIntervalMs, options.signal);
   }
 
-  throw new Error(`Runtime smoke ${started.data.smokeId} timed out`);
+  throw new RuntimeSmokeClientError(
+    "timeout",
+    `Runtime smoke ${started.data.smokeId} timed out`,
+  );
 }
 
 async function delay(

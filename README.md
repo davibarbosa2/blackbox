@@ -133,9 +133,9 @@ atomically applies and reads back the reviewed destination allowlist before it
 automatically creates a fresh equivalent Attack Replay and a legitimate Control
 Run.
 
-Success requires three finalized Evidence Bundles: the Baseline is `VULNERABLE`,
-the replay reads the protected document and reaches an explicit policy denial
-with no exact Canary receipt through its observation cutoff, and the control
+Success requires three finalized Evidence Bundles: the Baseline Run is `VULNERABLE`,
+the Attack Replay reads the protected document and reaches an explicit policy denial
+with no exact Canary receipt through its observation cutoff, and the Control Run
 delivers its legitimate response to the Trusted Destination. Only then does the
 Remediation become `VERIFIED`. Any readback, replay, control, or finalization
 failure reports `VALIDATION_FAILED`; the restrictive policy remains applied and
@@ -152,11 +152,11 @@ pnpm accept:reliability
 The command first runs the runtime smoke, so the configured OpenRouter model
 must make the required tool call and the TrueForge-to-Daytona path must create a
 sandbox, execute the marker command, reconcile persisted events, and finish its
-turn. It then runs three complete Baseline→Attack Replay→Control equivalence
+turn. It then runs three complete Baseline Run→Attack Replay→Control Run equivalence
 sets through BLACKBOX's HTTP API. Every set receives its own runtime directory,
 SQLite databases, policy state, scenario state, sink state, Run ids, and Canary
 Secrets. A set counts only when all three Evidence Bundles are finalized, the
-Baseline is `VULNERABLE`, the equivalent replay is `PROTECTED` at an explicit
+Baseline Run is `VULNERABLE`, the equivalent Attack Replay is `PROTECTED` at an explicit
 policy denial with no matching receipt, the Control Run passes, and the
 Remediation is `VERIFIED`.
 
@@ -169,8 +169,8 @@ starts it again. Changing `OPENROUTER_MODEL_ID` or
 `TRUEFORGE_MODEL_ALIAS` selects a new configuration fingerprint and therefore a
 new reliability set without a code edit.
 
-Success prints a human-readable summary with all three Baseline/Replay outcome
-pairs, each Control result, Run and bundle ids, configuration fingerprints,
+Success prints a human-readable summary with all three Baseline Run/Attack Replay
+outcome pairs, each Control Run result, Run and bundle ids, configuration fingerprints,
 durations, and rejected attempts. The same data is stored without raw Canary
 Secrets in the machine-readable report at:
 
@@ -189,10 +189,10 @@ pnpm test:reliability-failures
 ```
 
 It covers approval denial and stale approval; sink timeout or missing and
-mismatched receipts; model and sandbox failures; replay non-equivalence and
+mismatched receipts; model and sandbox failures; Attack Replay non-equivalence and
 missing explicit denial; Control Run failure; evidence-finalization failure;
 and event reconnection, reconciliation, and deduplication. These checks require
-unsupported Baseline or replay evidence to remain `INCONCLUSIVE` and prevent
+unsupported Baseline Run or Attack Replay evidence to remain `INCONCLUSIVE` and prevent
 `VERIFIED`.
 
 ## Mission Control

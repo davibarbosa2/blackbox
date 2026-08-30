@@ -3,11 +3,19 @@ import "dotenv/config";
 import { join } from "node:path";
 
 import { parseRuntimeConfig, type RuntimeConfig } from "../config.js";
+import {
+  baselineEvidenceBundleSchema,
+  controlEvidenceBundleSchema,
+  replayEvidenceBundleSchema,
+} from "../evidence/ledger.js";
+import { durableIncidentReadSchema } from "../remediation/store.js";
 import { startOwnedBlackbox } from "./owned-blackbox.js";
 import {
   formatReliabilityGateSummary,
   reliabilityConfigurationFingerprint,
   reliabilityEvidenceFromRemediation,
+  ReliabilityGateFailure,
+  type ReliabilityAcceptedSetContext,
   runReliabilityGate,
 } from "./reliability-gate-client.js";
 import { runRemediationAcceptanceViaHttp } from "./remediation-acceptance-client.js";
@@ -49,6 +57,15 @@ async function main(): Promise<void> {
           smokeId: smoke.smokeId,
         };
       },
+      async revalidateSet(acceptedSet) {
+        const attemptConfig = configForRuntimeDirectory(
+          config,
+          acceptedSet.runtimeDirectory,
+        );
+        return withOwnedBlackbox(attemptConfig, shutdown.signal, (baseUrl) =>
+          readAcceptedSet(baseUrl, acceptedSet, shutdown.signal),
+        );
+      },
       signal: shutdown.signal,
     });
     const resultPath = join(
@@ -78,6 +95,58 @@ async function main(): Promise<void> {
   } finally {
     shutdown.dispose();
   }
+}
+
+async function readAcceptedSet(
+  baseUrl: string,
+  acceptedSet: ReliabilityAcceptedSetContext,
+  signal: AbortSignal,
+) {
+  const [baselineResponse, replayResponse, controlResponse, incidentResponse] =
+    await Promise.all([
+      fetch(`${baseUrl}/api/runs/${acceptedSet.baselineRunId}/evidence`, {
+        signal,
+      }),
+      fetch(`${baseUrl}/api/runs/${acceptedSet.replayRunId}/evidence`, {
+        signal,
+      }),
+      fetch(`${baseUrl}/api/runs/${acceptedSet.controlRunId}/evidence`, {
+        signal,
+      }),
+      fetch(`${baseUrl}/api/incidents/${acceptedSet.incidentId}`, { signal }),
+    ]);
+  const [baselineBody, replayBody, controlBody, incidentBody] =
+    await Promise.all([
+      baselineResponse.json(),
+      replayResponse.json(),
+      controlResponse.json(),
+      incidentResponse.json(),
+    ]);
+  const baseline = baselineEvidenceBundleSchema.safeParse(baselineBody);
+  const replay = replayEvidenceBundleSchema.safeParse(replayBody);
+  const control = controlEvidenceBundleSchema.safeParse(controlBody);
+  const incident = durableIncidentReadSchema.safeParse(incidentBody);
+  if (
+    baselineResponse.status !== 200 ||
+    replayResponse.status !== 200 ||
+    controlResponse.status !== 200 ||
+    incidentResponse.status !== 200 ||
+    !baseline.success ||
+    !replay.success ||
+    !control.success ||
+    !incident.success
+  ) {
+    throw new ReliabilityGateFailure(
+      "resume.evidence_readback",
+      `accepted attempt ${acceptedSet.attemptId} did not expose all durable Evidence Bundles`,
+    );
+  }
+  return reliabilityEvidenceFromRemediation({
+    baseline: baseline.data,
+    control: control.data,
+    incident: incident.data,
+    replay: replay.data,
+  });
 }
 
 async function withOwnedBlackbox<T>(

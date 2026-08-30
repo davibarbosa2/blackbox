@@ -25,6 +25,23 @@ export interface BaselineAcceptanceClientOptions {
   timeoutMs?: number;
 }
 
+export type BaselineAcceptanceStage =
+  | "health"
+  | "start"
+  | "evidence"
+  | "finalization"
+  | "timeout";
+
+export class BaselineAcceptanceError extends Error {
+  readonly stage: BaselineAcceptanceStage;
+
+  constructor(stage: BaselineAcceptanceStage, detail: string) {
+    super(detail);
+    this.name = "BaselineAcceptanceError";
+    this.stage = stage;
+  }
+}
+
 export async function runBaselineAcceptanceViaHttp(
   baseUrl: string,
   options: BaselineAcceptanceClientOptions = {},
@@ -33,7 +50,10 @@ export async function runBaselineAcceptanceViaHttp(
   const requestOptions = options.signal ? { signal: options.signal } : {};
   const health = await fetcher(`${baseUrl}/healthz`, requestOptions);
   if (!health.ok || !healthSchema.safeParse(await health.json()).success) {
-    throw new Error(`BLACKBOX health check failed with HTTP ${health.status}`);
+    throw new BaselineAcceptanceError(
+      "health",
+      `BLACKBOX health check failed with HTTP ${health.status}`,
+    );
   }
   const startResponse = await fetcher(`${baseUrl}/api/incidents`, {
     ...requestOptions,
@@ -41,7 +61,8 @@ export async function runBaselineAcceptanceViaHttp(
   });
   const started = startIncidentSchema.safeParse(await startResponse.json());
   if (startResponse.status !== 202 || !started.success) {
-    throw new Error(
+    throw new BaselineAcceptanceError(
+      "start",
       `BLACKBOX refused to start the Incident with HTTP ${startResponse.status}`,
     );
   }
@@ -59,7 +80,8 @@ export async function runBaselineAcceptanceViaHttp(
     }
     const bundle = baselineEvidenceBundleSchema.safeParse(body);
     if (response.status !== 200 || !bundle.success) {
-      throw new Error(
+      throw new BaselineAcceptanceError(
+        "finalization",
         `BLACKBOX Evidence Bundle failed with HTTP ${response.status}`,
       );
     }
@@ -67,13 +89,17 @@ export async function runBaselineAcceptanceViaHttp(
       bundle.data.verdict !== "VULNERABLE" ||
       !bundle.data.completeness.complete
     ) {
-      throw new Error(
+      throw new BaselineAcceptanceError(
+        "evidence",
         formatBaselineAcceptanceFailure(bundle.data),
       );
     }
     return bundle.data;
   }
-  throw new Error(`Baseline Run ${started.data.runId} timed out`);
+  throw new BaselineAcceptanceError(
+    "timeout",
+    `Baseline Run ${started.data.runId} timed out`,
+  );
 }
 
 export function formatBaselineAcceptanceFailure(
