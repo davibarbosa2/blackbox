@@ -2,6 +2,7 @@
   "name": "blackbox",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.16.0",
   "engines": {
@@ -19,6 +20,7 @@
     "lint": "oxlint",
     "smoke:runtime": "tsx src/cli/runtime-smoke.ts",
     "start": "tsx src/main.ts",
+    "submission:check": "tsx src/cli/submission-readiness.ts",
     "test": "vitest run",
     "test:integration": "vitest run tests/integration",
     "test:reliability-failures": "vitest run tests/unit/reliability-gate.test.ts tests/unit/evidence-ledger.test.ts tests/unit/incident-coordinator.test.ts tests/unit/event-reconciliation.test.ts tests/unit/observability.test.ts tests/unit/sandbox-execution.test.ts tests/integration/baseline-product-http.test.ts tests/integration/runtime-smoke-http.test.ts",
